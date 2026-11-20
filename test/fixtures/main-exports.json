@@ -475,6 +475,7 @@
     "OLD_CODE_FOLDER_NAME:string",
     "adoptOldDir:function",
     "existingOr:function",
+    "glassRegistryFile:function",
     "isOwnName:function",
     "oldName:function",
     "outDirIn:function",

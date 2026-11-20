@@ -67,3 +67,26 @@ test('the installer finds a code folder and a data folder that still have the ea
     fs.mkdirSync(path.join(main, E.OLD_DATA_FOLDER_NAME));
     assert.equal(E.locations(code).dataDir, path.join(main, E.OLD_DATA_FOLDER_NAME));
 });
+
+// Regression (PB-01): the panel looked for glass.json in the data folder, the bridge writes it elsewhere,
+// so deleted Glass Blur captions were never cleaned off the footage.
+test('glassRegistryFile is the file fusion_bridge.py writes, new folder or old', () => {
+    const { spawnSync } = require('child_process');
+    const bridgeDir = path.join(__dirname, '..', '..', 'src', 'python');
+    const fakes = path.join(__dirname, '..', 'python', 'fakes');
+    const fromPython = (home) => {
+        const r = spawnSync('python3', ['-B', '-c', 'import sys; sys.path[:0] = sys.argv[1:3]; import fusion_bridge as fb; print(fb.glass_reg_path())', fakes, bridgeDir],
+            { env: { ...process.env, HOME: home }, encoding: 'utf8' });
+        assert.equal(r.status, 0, r.stderr);
+        return r.stdout.trim();
+    };
+    const sup = (home, name) => path.join(home, ...(process.platform === 'darwin' ? ['Library', 'Application Support', name] : ['.' + name]));
+    const onlyOld = path.join(tmp, 'glass-old'); fs.mkdirSync(sup(onlyOld, 'el-subtitle-animator'), { recursive: true });
+    const fresh = path.join(tmp, 'glass-new'); fs.mkdirSync(fresh, { recursive: true });
+    const both = path.join(tmp, 'glass-both'); fs.mkdirSync(sup(both, 'el-subtitle-animator'), { recursive: true }); fs.mkdirSync(sup(both, 'framelly'), { recursive: true });
+    assert.equal(N.glassRegistryFile(onlyOld), path.join(sup(onlyOld, 'el-subtitle-animator'), 'glass.json'));
+    for (const home of [onlyOld, fresh, both]) {
+        const want = N.glassRegistryFile(home);
+        assert.equal(fromPython(home), want, home);
+    }
+});

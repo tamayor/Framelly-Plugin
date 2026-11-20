@@ -49,7 +49,16 @@ function adoptOldDir(dir, oldDir) {
 // ~/.framelly: the speech engine, word timings and the MCP endpoint file.
 const HOME_DIR = existingOr(path.join(os.homedir(), '.framelly'), path.join(os.homedir(), '.el-subtitle-animator'));
 
+// The Glass Blur registry fusion_bridge.py keeps (its glass_reg_path(): the same folders, the same fallback).
+// Looked up on each call, because the bridge makes the folder the first time it writes.
+function glassRegistryFile(home = os.homedir(), platform = process.platform) {
+    const base = platform === 'darwin' ? path.join(home, 'Library', 'Application Support') : home;
+    const pre = platform === 'darwin' ? '' : '.';
+    const dir = path.join(base, pre + 'framelly'), old = path.join(base, pre + 'el-subtitle-animator');
+    return path.join(fs.existsSync(dir) || !fs.existsSync(old) ? dir : old, 'glass.json');
+}
+
 module.exports = {
     APP_NAME, OLD_APP_NAME, CATEGORY, OLD_CATEGORY, CODE_FOLDER_NAME, OLD_CODE_FOLDER_NAME, HOME_DIR,
-    existingOr, oldName, sameName, outDirIn, isOwnName, adoptOldDir,
+    existingOr, oldName, sameName, outDirIn, isOwnName, adoptOldDir, glassRegistryFile,
 };

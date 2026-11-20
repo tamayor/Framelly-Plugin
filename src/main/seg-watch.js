@@ -180,8 +180,8 @@ async function sweep() {
         // reads only when glass.json lists captions for this timeline). At most every GLASS_GC_MS.
         if (!state.applying && Date.now() - lastGlassGc >= GLASS_GC_MS) {
             lastGlassGc = Date.now();
-            const fs = require('fs'), path = require('path');
-            const glassFile = path.join(require('./config').DATA_DIR, 'glass.json');
+            const fs = require('fs');
+            const glassFile = require('./names').glassRegistryFile();   // where fusion_bridge.py keeps it
             let hasGlass = false;
             try { hasGlass = fs.statSync(glassFile).size > 4; } catch (e) { /* no glass.json yet */ }
             if (hasGlass) {
