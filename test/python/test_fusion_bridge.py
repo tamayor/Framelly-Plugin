@@ -39,7 +39,6 @@ class BridgeCase(unittest.TestCase):
         dvr.RESOLVE = resolve
         fb._resolve = None
         fb._items.clear()
-        fb._comps.clear()
         fb.comp_attrs_forget()
         fb.req_cache_clear()
 
@@ -129,7 +128,6 @@ class RequestHandling(BridgeCase):
     def test_a_failure_forgets_only_the_handles_of_its_own_clip(self):
         fb._items["clip-1"] = object()
         fb._items["clip-2"] = object()
-        fb._comps[("clip-1", "")] = object()
 
         def fails(a):
             raise RuntimeError("no")
@@ -140,7 +138,6 @@ class RequestHandling(BridgeCase):
         finally:
             fb.OPS.pop("_fails")
         self.assertEqual(list(fb._items), ["clip-2"])
-        self.assertEqual(fb._comps, {})
 
     def test_cancelled_is_reported_as_cancelled(self):
         def cancelled(a):
@@ -223,6 +220,7 @@ class Process(unittest.TestCase):
             env.pop(key, None)
         p = subprocess.run([sys.executable] + flags + [BRIDGE], input="\n".join(lines) + "\n", env=env,
                            capture_output=True, text=True, timeout=60)
+        self.stderr = p.stderr
         return p.returncode, [json.loads(x) for x in p.stdout.splitlines() if x.strip()]
 
     def test_answers_each_request_and_skips_lines_that_are_not_requests(self):
@@ -238,6 +236,8 @@ class Process(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertEqual(len(out), 1)
         self.assertIn("Cannot load Resolve's Python module", out[0]["error"])
+        # the panel drops the id-0 reply and reports "The Fusion helper stopped." + stderr: the reason must be there
+        self.assertIn("Cannot load Resolve's Python module", self.stderr)
 
 
 class SpotlightCurves(unittest.TestCase):
@@ -263,9 +263,6 @@ class SpotlightCurves(unittest.TestCase):
         r = fb.spot_curves({"anim": "rise", "inF": 10}, 30)
         self.assertLess(r["dy"][0], -0.05)
 
-
-if __name__ == "__main__":
-    unittest.main()
 
 
 class _Inp(object):
@@ -324,3 +321,7 @@ class SegmentLayerTest(unittest.TestCase):
         self.assertEqual(fb.segment_name(mt, 1, "Text 1", lm), "Upper")
         self.assertEqual(fb.segment_name(mt, 2, "Text 2", lm), "Emphasize")
         self.assertEqual(fb.seg_layer(None, 2), 2)
+
+
+if __name__ == "__main__":
+    unittest.main()

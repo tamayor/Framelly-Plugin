@@ -11,6 +11,7 @@ import sys
 import os
 import re
 import json
+import hashlib
 import math
 import traceback
 import time
@@ -18,26 +19,22 @@ import time
 try:
     import DaVinciResolveScript as dvr
 except Exception as e:  # pragma: no cover
-    sys.stdout.write(json.dumps({"id": 0, "ok": False, "error": "Cannot load Resolve's Python module: %s" % e}) + "\n")
+    why = "Cannot load Resolve's Python module: %s" % e
+    sys.stdout.write(json.dumps({"id": 0, "ok": False, "error": why}) + "\n")
     sys.stdout.flush()
+    # the panel matches replies by request id and drops this id-0 one; it adds stderr to "The Fusion helper stopped."
+    sys.stderr.write(why + "\n")
+    sys.stderr.flush()
     sys.exit(1)
-
-# Things that hang off a node's inputs (splines, paths, followers) are not nodes you edit directly.
-MODIFIER_IDS = {
-    "BezierSpline", "XYPath", "PolyPath", "Path", "StyledTextFollower", "Follower", "Calculation",
-    "Expression", "Publish", "Probe", "Perturb", "Shake", "Wireless", "Cos", "Sin", "Rand", "Ramp",
-    "Sine", "Triangle", "Duplicate", "Scale", "Offset",
-}
 
 _resolve = None
 
 # The Fusion fixes the panel applies (src/main/fusion-fixes.js; set with the "config" operation).
 FIX = {"wakeMode": "all", "wakeOnInsert": True, "retouchText": True,
        "fitFollowerDelay": True, "fitSegments": True, "clipSliderMax": True,
-       "wakeLock": False, "highlightProbeFrames": 9}
+       "wakeLock": False, "highlightProbeFrames": 9, "leadSingleRow": True}
 
 _items = {}   # item id -> TimelineItem
-_comps = {}   # (item id, comp name) -> comp
 
 # Per-request accounting for the panel's perf log (src/main/perf.js): how many Fusion calls an operation made.
 COUNTERS = {"toolLists": 0, "getAttrs": 0, "getInputs": 0, "setInputs": 0, "woken": 0, "renders": 0}
@@ -147,6 +144,8 @@ def find_item(item_id):
         for it in tl.GetItemListInTrack("video", t) or []:
             try:
                 if str(it.GetUniqueId()) == str(item_id):
+                    if len(_items) > 1000:      # as _audio_items: ids of deleted clips are never asked for again
+                        _items.clear()
                     _items[item_id] = it
                     return it
             except Exception:
@@ -390,7 +389,7 @@ def apply_text_design(tool, td):
                         return fallback
                 keys = sorted(stops.keys()) if stops else []
                 c1 = list(hex_to_rgb(el["color"])) if el.get("color") else (
-                    [float(get_in(tool, "Red%d" % idx) or 1), float(get_in(tool, "Green%d" % idx) or 1), float(get_in(tool, "Blue%d" % idx) or 1)])
+                    [num(get_in(tool, "Red%d" % idx), 1.0), num(get_in(tool, "Green%d" % idx), 1.0), num(get_in(tool, "Blue%d" % idx), 1.0)])
                 c2 = list(hex_to_rgb(el["color2"])) if el.get("color2") else stop(keys[-1] if keys else 1.0, [1.0, 1.0, 1.0])
                 # stop positions: the ones sent, else the gradient's own first / last stop (else 0 and 1)
                 p1 = float(el["stop1"]) if el.get("stop1") is not None else (float(keys[0]) if keys else 0.0)
@@ -490,9 +489,9 @@ def wake_effects(comp):
 
 
 WAKE_RAN = [False]   # set when a wake ran in the current request (handle: such a request is not retried)
-
-
-wake_followers = wake_effects   # older name
+# set when the current request made a change a second attempt would repeat on top of the first (a MultiText scaled
+# by a factor, a tool or an effect added / removed): handle does not retry such a request either
+MUTATED = [False]
 
 
 def set_typing_frames(comp, frames, clip_frames=None):
@@ -628,6 +627,8 @@ def op_set_text(a):
                 try:
                     if mod.GetData(BAKE_DATA):
                         continue        # a baked Kinetic row: its text comes from the Template (bake_rows)
+                    if text_expr(mod):
+                        continue        # a mirror (e.g. the highlight's copy of the emphasis): writing it cuts the link
                     mod.SetInput("Text", a["text"])
                     has_follower = True
                 except Exception:
@@ -664,6 +665,14 @@ def op_set_text(a):
 
 # ---------------------------------------------------------------- text boxes (Text+ / template nodes)
 FOLLOWERS = ("StyledTextFollower", "Follower")
+
+
+def text_expr(mod):
+    """The expression on a follower's Text input (a mirror of another follower), else None. Never raises."""
+    try:
+        return mod.Text.GetExpression() or None
+    except Exception:
+        return None
 
 
 def get_in(tool, name):
@@ -819,7 +828,7 @@ def set_node_text(tool, input_id, text, all_tools, first):
                 pass
         hit = False
         for mod in all_tools:
-            if attrs(mod).get("TOOLS_RegID") in FOLLOWERS and attrs(mod).get("TOOLS_Name") not in owned:
+            if attrs(mod).get("TOOLS_RegID") in FOLLOWERS and attrs(mod).get("TOOLS_Name") not in owned and not text_expr(mod):
                 try:
                     mod.SetInput("Text", text)
                     hit = True
@@ -856,6 +865,7 @@ def size_multitext(tool, f=1.0, max_size=None, line_spacing=None):
         gap = float(line_spacing) / (sum(cur) / len(cur))
     if abs(f - 1.0) < 1e-6 and abs(gap - 1.0) < 1e-6 and not line_spacing:
         return res
+    MUTATED[0] = True       # scales from the current values: a retry would scale the layers a second time
     skipped = res["skipped"]
     if line_spacing:
         for n in layers:
@@ -1239,12 +1249,12 @@ def op_highlight_box(a):
 
 
 ROW_JUSTIFY = {"manual": 0, "center": 1, "centre": 1, "left": 2, "right": 3}
-ROW_CTRL = {"gap": "RowGap", "link": "RowsLink", "equalize": "RowsEqualize", "justify": "RowsJustify"}
 ROW_XY = {"all": "Rows", "upper": "Upper", "emphasis": "Emphasis", "lower": "Lower"}
 
 
 def controls_tool(comp, ids):
-    """The tool holding a preset's own Inspector add-ons (its "Template"): the one that has the first of `ids`."""
+    """The tool holding a preset's own Inspector add-ons (its "Template"): the Template, else the first tool that has
+    one of the first three `ids` (all of a preset's add-ons are expected on that one tool)."""
     t = comp.FindTool("Template")
     if t is not None and any(get_in(t, i) is not None for i in ids[:3]):
         return t
@@ -1276,8 +1286,8 @@ def op_controls_get(a):
 
 
 def op_controls_set(a):
-    """Sets add-on inputs from the panel's Clip controls: {item, values: {id: number}}. Each value is clamped to the
-    range the panel sent (min / max). -> {values} as read back."""
+    """Sets add-on inputs from the panel's Clip controls: {item, values: {id: number}}. Values are written as sent
+    (not clamped here: the panel's sliders keep them in range). -> {values} as read back."""
     vals = a.get("values") or {}
     ids = [str(i) for i in vals.keys()]
     comp = get_comp(a["item"], a.get("comp"))
@@ -1695,7 +1705,7 @@ def capture_unique(item, n, max_dim, out_dir, hold, cancel_path, pre="p"):
         if not r or not r.get("success"):
             raise RuntimeError((r or {}).get("error") or "Resolve could not export a frame")
         with open(fp, "rb") as fh:
-            return fh.read()
+            return hashlib.blake2b(fh.read(), digest_size=16).digest()      # only compared: not the PNG itself
 
     def drop(i):
         try:
@@ -1703,7 +1713,7 @@ def capture_unique(item, n, max_dim, out_dir, hold, cancel_path, pre="p"):
         except Exception:
             pass
 
-    cache = {}                     # every frame rendered so far -> its PNG bytes
+    cache = {}                     # every frame rendered so far -> a digest of its PNG
 
     def get(i):
         if i not in cache:
@@ -1756,11 +1766,7 @@ def capture_unique(item, n, max_dim, out_dir, hold, cancel_path, pre="p"):
                 continue
             same = 0               # it moves again in between: walk those frames one by one
     for i in range(n):
-        if src[i] == i:
-            if not os.path.exists(path_of(i)):
-                with open(path_of(i), "wb") as fh:
-                    fh.write(cache[i])
-        else:
+        if src[i] != i:
             drop(i)
     return src
 
@@ -2023,6 +2029,7 @@ def op_preview_bg(a):
     try:
         bg = comp.AddTool("Background", -32768, -32768)
         mg = comp.AddTool("Merge", -32768, -32768)
+        MUTATED[0] = True      # a retry would add a second Background and Merge
         req_cache_clear()      # the tool list changed
         comp_attrs_forget(a["item"])
         if bg is None or mg is None:
@@ -2682,7 +2689,7 @@ def seg_state(comp, tpl):
     except Exception:
         rs = 0.0
     cur = [rs]
-    for n in range(1, 10):
+    for n in range(1, 17):          # as many as segment_list / fit_segments handle
         st = get_in(tpl, "Seg%dStart" % n)
         if st is None:
             break
@@ -2708,6 +2715,8 @@ def rekey_if_changed(comp, tpl, last, item):
     if json.dumps(cur) != (last if isinstance(last, str) else json.dumps(last)) or (first and seg_path_exprs(comp)):
         keyed = key_followers(comp)     # saves the new state on the Template
     if item is not None:
+        if len(_seg_seen) > 1000:       # ids of deleted clips are never asked for again: do not keep their handles
+            _seg_seen.clear()
         _seg_seen[item] = (comp, tpl, cur)
     return keyed
 
@@ -3101,9 +3110,26 @@ def bake_merge(comp, slot, empty):
         if bool((m.GetAttrs() or {}).get("TOOLB_PassThrough")) != bool(empty):
             m.SetAttrs({"TOOLB_PassThrough": bool(empty)})
         # attrs() caches what it read: wake_effects must see the new state, or it would toggle the Merge back on
-        attrs(m)["TOOLB_PassThrough"] = bool(empty)
+        a = attrs(m)
+        a["TOOLB_PassThrough"] = bool(empty)
+        attrs_patch(comp, a.get("TOOLS_Name"), "TOOLB_PassThrough", bool(empty))
     except Exception:
         pass
+
+
+def attrs_patch(comp, name, key, value):
+    """Sets `key` in every attrs() cache entry of comp's tool `name`: FindTool and GetToolList may hand out
+    different wrapper objects for one tool, so patching the FindTool object's entry alone can leave the tool list's
+    entry (and the positional cross-request copy) with the old value."""
+    ck = _comp_key.get(id(comp))
+    if not name or ck is None or ck[0] is not comp:
+        return
+    ckey = ck[1]
+    dicts = list(((_comp_attrs.get(ckey) or {}).get("attrs") or {}).values())
+    dicts += [hit[1] for k, hit in _req_attrs.items() if (_req_index.get(k) or (None,))[0] == ckey]
+    for d in dicts:
+        if d.get("TOOLS_Name") == name:
+            d[key] = value
 
 
 def remap_tt(t, rs, AS, AF, NAT, fit=None):
@@ -3118,6 +3144,17 @@ def remap_tt(t, rs, AS, AF, NAT, fit=None):
         return rel
     D = max(1, AF - AS)
     return rel * NAT / D if rel < D else NAT + rel - D
+
+
+def unmap_tt(tt, AS, AF, NAT):
+    """Inverse of remap_tt (and of retime.js remapExpr) without a fit: the clip frame (from the clip's start) where
+    the preset's own time tt is reached. AS = Animation Start, AF = Animation Frames (0 = no retiming), NAT = its
+    natural length."""
+    if AF <= 0:
+        return AS + tt
+    D = max(1, AF - AS)
+    NAT = max(1.0, float(NAT))
+    return AS + (tt * D / NAT if tt < NAT else D + tt - NAT)
 
 
 def bake_rows(comp, tpl, kind, st):
@@ -3480,6 +3517,14 @@ def op_timing_set(a):
     ranges = a.get("ranges")
     if ranges is None:
         ranges = [{"key": kind, "start": 0, "end": a.get("value")}]
+    if kind == "segments":      # every key checked before the first write, so a bad one changes nothing
+        for r in ranges:
+            try:
+                n = int(r.get("key"))
+            except Exception:
+                n = 0
+            if n < 1:
+                return {"ok": False, "why": "That clip has no segment %s" % r.get("key")}
     for r in ranges:
         start = max(0, int(round(num(r.get("start"), 0))))
         end = max(start + 1, int(round(num(r.get("end"), 1))))
@@ -3914,11 +3959,8 @@ def op_row_times(a):
         tt = k * float(step)
         if fit:
             f = fit_frame(fit, tt)
-        elif frames_in <= 0:
-            f = start + tt
         else:
-            d = max(1, frames_in - start)
-            f = start + (tt * d / natural if tt < natural else natural + tt - natural)
+            f = unmap_tt(tt, start, frames_in, natural)
         out.append(int(round(f)))
     return {"frames": out, "count": rows, "step": float(step), "natural": natural, "animFrames": frames_in}
 
@@ -3980,12 +4022,13 @@ def follower_word_times(comp, tpl):
     if not starts:
         return {"frames": [], "count": 0}
     T = int(math.floor(num(get_in(tpl, "AnimFrames"), 0)))
+    S = max(0, int(math.floor(num(get_in(tpl, "AnimStart"), 0))))
     N = max(1.0, num(get_in(tpl, "AnimNatural"), 1))
     out = []
     for i in starts:
         tt = i * delay
         fit = word_fit_frame(comp, tt)        # a "Fit to words" keying of AnimTime, when the clip has one
-        f = fit if fit is not None else (tt if T <= 0 else (tt * T / N if tt < N else T + tt - N))
+        f = fit if fit is not None else unmap_tt(tt, S, T, N)
         out.append(int(round(f)))
     return {"frames": out, "count": len(out), "step": delay, "natural": N, "animFrames": T}
 
@@ -4014,14 +4057,7 @@ def jp_word_times(comp, tpl):
     for k in range(NW):
         tt = k * STEP          # inverse of remap_tt; the pop shows from the first frame where tt passes this
         fit = fit_keys(tpl)
-        if fit:
-            rel = fit_frame(fit, tt) - AS
-        elif AF <= 0:
-            rel = tt
-        else:
-            D = max(1, AF - AS)
-            rel = tt * D / NAT if tt < NAT else tt - NAT + D
-        out.append(int(round(AS + rel)))
+        out.append(int(round(fit_frame(fit, tt) if fit else unmap_tt(tt, AS, AF, NAT))))
     return {"frames": out, "count": NW, "step": STEP, "natural": NAT, "animFrames": AF}
 
 
@@ -4419,6 +4455,8 @@ def fx_bake_track(effect, it, force=False, check_only=False):
         return str(get_in(t, "Comments") or "") != sig      # stale: the clip moved / was trimmed since it was keyed
     if not force and str(get_in(t, "Comments") or "") == sig:
         return False
+    if dur <= 0:        # the clip handle went stale mid-request: nothing to key
+        return False
     # one value per clip frame: frames the footage does not cover hold the nearest tracked one
     import bisect
     def at(f):
@@ -4427,6 +4465,8 @@ def fx_bake_track(effect, it, force=False, check_only=False):
         if f >= keys[-1]:
             return trk[keys[-1]]
         idx = bisect.bisect_left(keys, f)
+        if keys[idx] != f and f - keys[idx - 1] < keys[idx] - f:
+            return trk[keys[idx - 1]]
         return trk[keys[idx]]
     rows = [at(start + i) for i in range(dur)]
     sigma = max(0.0, v["Smooth"]) / 100.0 * 6.0
@@ -4941,6 +4981,7 @@ def op_fx_set(a):
                 if e is None:
                     failed.append(it.GetName())
                     continue
+                MUTATED[0] = True      # a retry of a flip (on = null) would see it on and take it off again
                 have[key] = e
                 init = dict((a.get("params") or {}))
                 if init:
@@ -4972,6 +5013,7 @@ def op_fx_set(a):
             if not it.DeleteEffects([have[key]]):
                 failed.append(it.GetName())
             else:
+                MUTATED[0] = True
                 removed = True
                 del have[key]
         fx_sync_hold(have, hold)
@@ -5253,16 +5295,23 @@ def glass_sync(item_id, force=False):
     done, failed = [], []
     for v, uid in under:
         e = glass_find(v, tid)
+        added = False
         if e is None:
             e = v.AddEffect("fusion", from_fx)
             if e is None:
                 failed.append(v.GetName())
                 continue
+            added = True
         try:
             glass_write(e, tid, g, g["start"] - int(v.GetStart()))
             done.append(uid)
         except Exception as ex:
             failed.append("%s (%s)" % (v.GetName(), ex))
+            if added:       # not tagged yet: glass_find would never see it, and the next sync would add another
+                try:
+                    v.DeleteEffects([e])
+                except Exception:
+                    pass
     gone = [c for c in prev if c not in done]
     removed = glass_drop(tl, tid, gone) if gone else 0
     reg.setdefault(key, {})
@@ -5588,7 +5637,10 @@ def _key_input(comp, tool, inp, vals, rs, scale=1.0, add=0.0):
     if len(set(vals)) <= 1:
         sp = _fx_modifier(tool, inp, "BezierSpline")
         if sp is not None:
-            tool.SetInput(inp, None)
+            try:
+                getattr(tool, inp).ConnectTo(None)      # drop the old spline, as restore_input_expr does
+            except Exception:
+                tool.SetInput(inp, None)
         tool.SetInput(inp, vals[0] * scale + add if vals else add)
         return
     sp = _fx_modifier(tool, inp, "BezierSpline")
@@ -5871,6 +5923,7 @@ def handle(req):
         COUNTERS[k] = 0
     STEPS.clear()
     WAKE_RAN[0] = False
+    MUTATED[0] = False
     out = None
     attempts = (2,) if op in NO_RETRY else (1, 2)
     for attempt in attempts:
@@ -5887,16 +5940,13 @@ def handle(req):
             item = (req.get("args") or {}).get("item") if isinstance(req.get("args"), dict) else None
             if item is not None:
                 _items.pop(str(item), None)
-                for k in [k for k in _comps if k[0] == str(item)]:
-                    _comps.pop(k, None)
                 _seg_seen.pop(str(item), None)
                 comp_attrs_forget(item)
             else:
                 _items.clear()
-                _comps.clear()
                 comp_attrs_forget()
             slow = (time.perf_counter() - t0) > 2.0
-            if attempt == 2 or slow or WAKE_RAN[0]:
+            if attempt == 2 or slow or WAKE_RAN[0] or MUTATED[0]:
                 out = {"id": req.get("id"), "ok": False, "error": str(e) or e.__class__.__name__,
                        "trace": traceback.format_exc()[-600:]}
                 break

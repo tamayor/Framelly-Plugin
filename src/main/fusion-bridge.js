@@ -66,7 +66,9 @@ class Helper {
         const proc = spawn(pythonPath(), [BRIDGE_SCRIPT], { env });
         this.proc = proc;
         state[this.slot] = proc;
+        // a replaced helper (killed after a timeout) can still flush output: it must not mix into the new one's
         proc.stdout.on('data', (d) => {
+            if (this.proc !== proc) return;
             this.buf += d.toString();
             let i;
             while ((i = this.buf.indexOf('\n')) >= 0) {
@@ -76,7 +78,7 @@ class Helper {
                 this.onReply(msg);
             }
         });
-        proc.stderr.on('data', (d) => { this.err = (this.err + d.toString()).slice(-400); });
+        proc.stderr.on('data', (d) => { if (this.proc === proc) this.err = (this.err + d.toString()).slice(-400); });
         proc.stdin.on('error', () => { /* helper went away: the exit handler rejects what was waiting */ });
         proc.stdout.on('error', () => { /* ignore */ });
         proc.stderr.on('error', () => { /* ignore */ });
