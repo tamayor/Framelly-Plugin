@@ -104,16 +104,62 @@ def decode(ffmpeg, path, a, dur, loudness):
 
 
 def envelope(x):
-    """dB of a 20 ms RMS window every 10 ms (cumulative sums: linear time on hour-long files)."""
+    """dB of a 20 ms RMS window every 10 ms (cumulative sums: linear time on hour-long files).
+    The windows start and end on 5 ms marks, so the squares are summed per 5 ms block, a chunk at a time: an hour of
+    audio needs a few MB here, not three float64 copies of the whole stream."""
     if len(x) < WIN:
         return np.full(1, -120.0, np.float32)
-    c = np.concatenate(([0.0], np.cumsum(x.astype(np.float64) ** 2)))
+    half = HOP // 2
+    nb = -(-len(x) // half)                      # 5 ms blocks, the last one partial
+    sums = np.empty(nb, np.float64)
+    step = half * 65536
+    for s in range(0, len(x), step):
+        seg = x[s:s + step].astype(np.float64) ** 2
+        m = len(seg) // half * half
+        k = s // half
+        sums[k:k + m // half] = seg[:m].reshape(-1, half).sum(axis=1)
+        if m < len(seg):
+            sums[k + m // half] = seg[m:].sum()
+    c = np.concatenate(([0.0], np.cumsum(sums)))  # c[j] = sum of squares of samples [0, j * half)
     n = len(x) // HOP
     centres = np.arange(n) * HOP + HOP // 2
     lo = np.clip(centres - WIN // 2, 0, len(x))
     hi = np.clip(centres + WIN // 2, 0, len(x))
-    ms = (c[hi] - c[lo]) / np.maximum(hi - lo, 1)
+    ms = (c[-(-hi // half)] - c[lo // half]) / np.maximum(hi - lo, 1)
     return (10 * np.log10(ms + 1e-12)).astype(np.float32)
+
+
+CACHE_MAX_BYTES = 256 * 1024 * 1024
+
+
+def prune_cache(cdir, max_bytes=CACHE_MAX_BYTES):
+    """Keeps the envelope cache under max_bytes: the least recently used entries (.npy + .json) go first."""
+    try:
+        names = os.listdir(cdir)
+    except OSError:
+        return
+    entries = {}
+    for name in names:
+        key, ext = os.path.splitext(name)
+        if ext not in (".npy", ".json"):
+            continue
+        try:
+            st = os.stat(os.path.join(cdir, name))
+        except OSError:
+            continue
+        e = entries.setdefault(key, [0, 0.0])
+        e[0] += st.st_size
+        e[1] = max(e[1], st.st_mtime)
+    total = sum(e[0] for e in entries.values())
+    for key, (size, _) in sorted(entries.items(), key=lambda kv: kv[1][1]):
+        if total <= max_bytes:
+            break
+        for ext in (".npy", ".json"):
+            try:
+                os.remove(os.path.join(cdir, key + ext))
+            except OSError:
+                pass
+        total -= size
 
 
 def load_env(src, req, p):
@@ -127,7 +173,12 @@ def load_env(src, req, p):
             with open(fm, "r") as f:
                 meta = json.load(f)
             if meta.get("loudness") or not p["loudness"]:
-                return np.load(fe), meta.get("lufs")
+                db = np.load(fe)
+                try:
+                    os.utime(fe)                 # recently used: pruned last
+                except OSError:
+                    pass
+                return db, meta.get("lufs")
         except Exception:
             pass
     x, lufs = decode(req.get("ffmpeg") or "ffmpeg", src["path"], float(src["a"]), float(src["b"]) - float(src["a"]), p["loudness"])
@@ -140,6 +191,7 @@ def load_env(src, req, p):
             with open(tmp_fm, "w") as f:
                 json.dump({"lufs": lufs, "loudness": bool(p["loudness"]), "path": src["path"]}, f)
             os.replace(tmp_fm, fm)
+            prune_cache(cdir)
         except OSError:
             pass
     return db, lufs
@@ -598,8 +650,8 @@ def main():
     if np is None:
         print("RESULT " + json.dumps({"error": "numpy is missing"}), flush=True)
         sys.exit(2)
-    req = json.loads(sys.stdin.read() or "{}")
     try:
+        req = json.loads(sys.stdin.read() or "{}")
         out = analyse(req)
     except Exception as e:
         print("RESULT " + json.dumps({"error": str(e)}), flush=True)

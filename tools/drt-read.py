@@ -18,6 +18,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import sys
 import tempfile
 import zipfile
@@ -270,7 +271,8 @@ def read_drt(path):
 
 
 def export_drt(timeline_name=None):
-    sys.path.append(os.environ.get("RESOLVE_SCRIPT_API", "") + "/Modules")
+    if os.environ.get("RESOLVE_SCRIPT_API"):
+        sys.path.append(os.path.join(os.environ["RESOLVE_SCRIPT_API"], "Modules"))
     sys.path.append(MODULES)
     import DaVinciResolveScript as dvr
     resolve = dvr.scriptapp("Resolve")
@@ -287,9 +289,10 @@ def export_drt(timeline_name=None):
                 break
     if not tl:
         raise RuntimeError("Timeline not found")
-    folder = tempfile.mkdtemp(prefix="elsa-drt-")
+    folder = tempfile.mkdtemp(prefix="framelly-drt-")
     path = os.path.join(folder, "timeline.drt")
     if not tl.Export(path, resolve.EXPORT_DRT) or not os.path.exists(path):
+        shutil.rmtree(folder, ignore_errors=True)
         raise RuntimeError("Resolve could not export the timeline")
     return path, tl.GetName()
 
@@ -311,13 +314,11 @@ def main():
         path = a.drt
     else:
         ap.error("give a .drt file or --export")
-    clips = read_drt(path)
-    if a.export:
-        try:
-            os.remove(path)
-            os.rmdir(os.path.dirname(path))
-        except OSError:
-            pass
+    try:
+        clips = read_drt(path)
+    finally:
+        if a.export:
+            shutil.rmtree(os.path.dirname(path), ignore_errors=True)
     if a.track:
         want = set(t.strip().upper() for t in a.track.split(","))
         clips = [c for c in clips if c["track"] in want]

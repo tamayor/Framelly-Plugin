@@ -99,21 +99,33 @@ def _run(cv2, frames, path_of, anchor_img, box_px, size, report):
     return out
 
 
+def clamp_box(box, W, H):
+    """The 0..1 box in pixels, kept inside the picture (a box dragged past the edge would break tracker.init), at
+    least 4 px a side."""
+    bx, by, bw, bh = box
+    x0 = min(max(0.0, bx * W), W - 4.0)
+    y0 = min(max(0.0, by * H), H - 4.0)
+    x1 = min(float(W), bx * W + bw * W)
+    y1 = min(float(H), by * H + bh * H)
+    return (x0, y0, max(4.0, x1 - x0), max(4.0, y1 - y0))
+
+
 def main():
     req = json.loads(sys.stdin.readline() or "{}")
-    import cv2
     d = req["dir"]
     frames = sorted(set(int(f) for f in req["frames"]))
+    if not frames:
+        raise RuntimeError("No frames to track")
+    import cv2
     anchor = int(req["anchor"])
     if anchor not in frames:
         anchor = min(frames, key=lambda f: abs(f - anchor))
     path_of = lambda f: os.path.join(d, "f%d.jpg" % f)
     img0 = cv2.imread(path_of(anchor))
     if img0 is None:
-        raise RuntimeError("The first frame could not be read")
+        raise RuntimeError("The anchor frame %d could not be read" % anchor)
     H, W = img0.shape[:2]
-    bx, by, bw, bh = [float(v) for v in req["box"]]
-    box_px = (bx * W, by * H, max(4.0, bw * W), max(4.0, bh * H))
+    box_px = clamp_box([float(v) for v in req["box"]], W, H)
     total = len(frames)
     done = [1]
     step = max(1, total // 50)

@@ -17,6 +17,12 @@ import cv2
 import numpy as np
 
 
+def write_image(path, img, params):
+    """cv2.imwrite, raising when nothing was written (it returns False on a full disk or a missing folder)."""
+    if not cv2.imwrite(path, img, params):
+        raise RuntimeError("could not write " + path)
+
+
 def alpha_of(png):
     img = cv2.imread(png, cv2.IMREAD_UNCHANGED)
     if img is None:
@@ -65,7 +71,7 @@ def main():
         if s < 1.0:
             img = cv2.resize(img, (int(round(w * s)) // 2 * 2, int(round(h * s)) // 2 * 2), interpolation=cv2.INTER_AREA)
         os.makedirs(a["dir"], exist_ok=True)
-        cv2.imwrite(os.path.join(a["dir"], "f0.jpg"), img, [cv2.IMWRITE_JPEG_QUALITY, 95])
+        write_image(os.path.join(a["dir"], "f0.jpg"), img, [cv2.IMWRITE_JPEG_QUALITY, 95])
         return {"width": int(img.shape[1]), "height": int(img.shape[0])}
     if op == "crop":
         img, al = alpha_of(a["png"])
@@ -75,7 +81,7 @@ def main():
             raise RuntimeError("nothing was cut out (no person found)")
         pad = int(a.get("pad") or 6)
         x0, y0, x1, y1 = max(0, xs.min() - pad), max(0, ys.min() - pad), min(w, xs.max() + 1 + pad), min(h, ys.max() + 1 + pad)
-        cv2.imwrite(a["out"], img[y0:y1, x0:x1], [cv2.IMWRITE_PNG_COMPRESSION, 3])
+        write_image(a["out"], img[y0:y1, x0:x1], [cv2.IMWRITE_PNG_COMPRESSION, 3])
         return {"box": [x0 / w, y0 / h, (x1 - x0) / w, (y1 - y0) / h], "width": int(w), "height": int(h)}
     if op == "outline":
         n = max(16, min(240, int(a.get("points") or 72)))

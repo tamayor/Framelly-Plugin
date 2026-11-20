@@ -1,5 +1,8 @@
-# Python packages for development. Nothing here is needed to run the plugin:
-# src/python/fusion_bridge.py uses only the standard library and Resolve's own DaVinciResolveScript module.
+# Python packages for development and for running the helpers by hand.
+# src/python/fusion_bridge.py uses only the standard library and Resolve's own DaVinciResolveScript module. The other
+# helpers need packages at runtime, which the app finds or installs itself: news_match_cut.py (Match Cut) runs in a
+# system Python with Pillow (src/main/match-cut.js looks for one), and subject_tracker.py / subject_matte.py /
+# broll_cutout.py run in the app's own tracker venv. They are listed here so the helpers and their tests can run here.
 #
 #   python3 -m pip install -r requirements-dev.txt
 
@@ -8,10 +11,16 @@ pyflakes>=3.0
 
 # tools/gen-justified-pop.py (glyph widths from the font file)
 fonttools>=4.0
-# tools/lower-third-align.py (measures a rendered frame)
+# src/python/news_match_cut.py (needed at runtime), subject_matte.py "measure", tools/lower-third-align.py
 Pillow>=10.0
 
-# src/python/subject_tracker.py (Track Subject). The panel installs these itself into its own virtual environment
-# the first time Track Subject is used (src/main/subject-track.js); listed here for running the tracker by hand.
+# src/python/subject_tracker.py (Track Subject), subject_matte.py and broll_cutout.py (Spotlight, B-roll cut-outs).
+# The panel installs these into its own virtual environment the first time they are needed (src/main/subject-track.js);
+# test/python/test_subject_matte.py is skipped in a Python without OpenCV.
 opencv-contrib-python-headless>=4.8
 numpy>=1.24
+# subject_matte.py (Robust Video Matting model)
+onnxruntime>=1.16
+
+# optional: tools/drt-read.py reads zstd-compressed Fusion comps with it (without it those comps show no text)
+zstandard>=0.21

@@ -2,6 +2,7 @@
 waiting for frames that are still being exported. Needs OpenCV + numpy, so it runs in the app's tracker venv
 (`<userData>/tracker-venv/bin/python3 -B -m unittest discover -s test/python`) and is skipped elsewhere."""
 import os
+import shutil
 import sys
 import tempfile
 import threading
@@ -59,6 +60,7 @@ class SubjectMatteTest(unittest.TestCase):
 
     def test_wait_for_reads_a_frame_once_the_next_one_lands(self):
         d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
         frames = [7, 8]
         cancel = os.path.join(d, "cancel")
         open(os.path.join(d, "f7.jpg"), "wb").close()
@@ -68,7 +70,9 @@ class SubjectMatteTest(unittest.TestCase):
             open(os.path.join(d, "f8.jpg"), "wb").close()
             time.sleep(0.1)
             open(os.path.join(d, "exported"), "wb").close()
-        threading.Thread(target=later).start()
+        th = threading.Thread(target=later)
+        th.start()
+        self.addCleanup(th.join)           # runs before the rmtree above (cleanups run last-in first-out)
         t0 = time.time()
         self.assertTrue(M.wait_for(d, frames, 0, 5, cancel))
         self.assertGreater(time.time() - t0, 0.1)          # f7 alone may still be half written

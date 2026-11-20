@@ -21,7 +21,7 @@ From a terminal
 Each run: <out-dir>/<word>/ (screenshots, frames, report.txt, <word>.mp4). Default out-dir:
 ./Framelly MatchCut. Progress lines start with "PROGRESS ", the last line is "RESULT {json}".
 """
-import argparse, html, json, os, re, shutil, subprocess, sys, tempfile
+import argparse, hashlib, html, json, os, re, shutil, signal, subprocess, sys, tempfile, threading
 import urllib.parse, urllib.request
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor
@@ -40,6 +40,13 @@ BROWSERS = [
 BLOCKED_SITES = ('reuters.com', 'wsj.com', 'nytimes.com', 'bloomberg.com', 'ft.com',
                  'washingtonpost.com', 'economist.com', 'barrons.com', 'marketwatch.com')
 IMG_EXT = ('.png', '.jpg', '.jpeg', '.webp')
+MIN_SHOT_BYTES = 20000  # smaller screenshots are blank pages / bot walls
+# headless browsers run in their own sessions, so the app's Cancel (SIGTERM to our process group) does not reach them:
+# on_term() kills them and removes their profiles (Python's default SIGTERM skips every finally block)
+_BROWSERS = set()   # running Popen objects
+_PROFILES = set()   # their --user-data-dir folders
+_LOCK = threading.Lock()
+_STOPPING = [False]
 
 
 def log(*a):
@@ -72,15 +79,19 @@ def news_links(query, count, lang):
     url = ('https://news.google.com/rss/search?q=' + urllib.parse.quote(f'intitle:"{query}"')
            + f'&hl={hl}-{gl}&gl={gl}&ceid={gl}:{hl}')
     req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-    data = urllib.request.urlopen(req, timeout=20).read()
-    items = ET.fromstring(data).findall('.//item')
+    try:
+        data = urllib.request.urlopen(req, timeout=20).read()
+        items = ET.fromstring(data).findall('.//item')
+    except (OSError, ET.ParseError) as e:  # offline, DNS, HTTP 429/503 (URLError is an OSError), a consent page
+        sys.exit(f'Could not get news results from Google News ({e}). Check the internet connection and try again.')
     out = []
     for it in items:
         src = it.find('source')
         site = (src.get('url') if src is not None else '') or ''
-        if any(b in site for b in BLOCKED_SITES):
+        link = (it.findtext('link') or '').strip()
+        if not link or any(b in site for b in BLOCKED_SITES):
             continue
-        out.append((it.findtext('link'), html.unescape(it.findtext('title') or '')))
+        out.append((link, html.unescape(it.findtext('title') or '')))
     out = out[: count * 4]  # over-fetch: some pages fail / cookie walls / lack the word
     # Google's links open a redirect page that ad-heavy sites never finish loading behind: use the real URLs
     with ThreadPoolExecutor(8) as ex:
@@ -112,17 +123,22 @@ def decode_link(link, hl='en', gl='US'):
 
 
 def screenshot(browser, url, path, w=1280, h=1500, scale=2):
-    prof = tempfile.mkdtemp(prefix='mc-prof-')
-    cmd = [browser, '--headless=new', '--disable-gpu', '--hide-scrollbars', '--mute-audio',
-           '--no-first-run', '--no-default-browser-check', f'--user-data-dir={prof}',
-           f'--window-size={w},{h}', f'--force-device-scale-factor={scale}',
-           '--lang=en-US', f'--user-agent={UA}', f'--screenshot={path}', url]
     # a real article: captured when loaded or after 12 s at the latest (ads keep news pages "loading" for ever);
     # a Google redirect link (not decoded) needs virtual time for its script to forward to the article
-    cmd[-2:-2] = ['--virtual-time-budget=12000', '--timeout=25000'] if 'news.google.com' in url else ['--timeout=12000']
+    wait = ['--virtual-time-budget=12000', '--timeout=25000'] if 'news.google.com' in url else ['--timeout=12000']
+    p = prof = None
     try:
-        import signal
-        p = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        with _LOCK:  # on_term() holds it while it cleans up: no browser starts after that
+            if _STOPPING[0]:
+                return False
+            prof = tempfile.mkdtemp(prefix='mc-prof-')
+            _PROFILES.add(prof)
+            cmd = [browser, '--headless=new', '--disable-gpu', '--hide-scrollbars', '--mute-audio',
+                   '--no-first-run', '--no-default-browser-check', f'--user-data-dir={prof}',
+                   f'--window-size={w},{h}', f'--force-device-scale-factor={scale}',
+                   '--lang=en-US', f'--user-agent={UA}', *wait, f'--screenshot={path}', url]
+            p = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+            _BROWSERS.add(p)
         try:
             p.wait(timeout=40)
         except subprocess.TimeoutExpired:
@@ -132,8 +148,35 @@ def screenshot(browser, url, path, w=1280, h=1500, scale=2):
                 p.kill()
             p.wait()
     finally:
-        shutil.rmtree(prof, ignore_errors=True)
-    return os.path.exists(path) and os.path.getsize(path) > 20000
+        with _LOCK:
+            _BROWSERS.discard(p)
+            _PROFILES.discard(prof)
+        if prof:
+            shutil.rmtree(prof, ignore_errors=True)
+    return good_shot(path)
+
+
+def good_shot(path):
+    return os.path.exists(path) and os.path.getsize(path) > MIN_SHOT_BYTES
+
+
+def on_term(signum, _frame):
+    """Cancel from the app: stop the headless browsers, remove their profiles, exit."""
+    with _LOCK:
+        _STOPPING[0] = True
+        for p in list(_BROWSERS):
+            try:
+                os.killpg(p.pid, signal.SIGKILL)
+            except OSError:
+                pass
+        for prof in list(_PROFILES):
+            shutil.rmtree(prof, ignore_errors=True)
+    os._exit(128 + signum)
+
+
+def shot_name(url):
+    """Screenshot file for an article: named after its URL, so a re-run only reuses a picture of the same article."""
+    return hashlib.sha1(url.encode('utf-8')).hexdigest()[:12] + '.png'
 
 
 # ---------------------------------------------------------------- OCR
@@ -162,6 +205,8 @@ def ocr_words(path, psm):
 def find_word(path, query, min_conf):
     """Return (x, y, w, h) of the largest match of `query` (1+ words), or None."""
     target = [norm(t) for t in query.split() if norm(t)]
+    if not target:
+        return None
     best = None
     for psm in (3, 11):
         rows = ocr_words(path, psm)
@@ -232,6 +277,14 @@ def durations(n, fps, start, end, hold):
     return out
 
 
+def hold_frame(src, dst):
+    """dst = the same picture as src: a hard link, or a copy where the drive has none (exFAT / FAT / SMB)."""
+    try:
+        os.link(src, dst)
+    except OSError:
+        shutil.copyfile(src, dst)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('word', help='word or short phrase to match on')
@@ -253,9 +306,12 @@ def main():
     ap.add_argument('--min-articles', type=int, default=3, help='fail rather than make a near-still clip')
     ap.add_argument('--out-dir', help=f'folder for runs (default ./{RUNS_DIR_NAME}); each run gets <word>/')
     a = ap.parse_args()
+    signal.signal(signal.SIGTERM, on_term)
 
     W, H = map(int, a.size.lower().split('x'))
     px, py = map(float, a.pos.split(','))
+    if not any(norm(t) for t in a.word.split()):
+        sys.exit(f'"{a.word}" has no letters or digits to find in the articles: type a word.')
     slug = re.sub(r'\W+', '-', a.word.lower()).strip('-') or 'word'
     out_dir = os.path.join(os.path.expanduser(a.out_dir) if a.out_dir else os.path.join(os.getcwd(), RUNS_DIR_NAME), slug)
     shots_dir = os.path.join(out_dir, 'screenshots'); frames_dir = os.path.join(out_dir, 'frames')
@@ -286,8 +342,8 @@ def main():
 
         def grab(arg):
             i, (url, title) = arg
-            p = os.path.join(shots_dir, f'{i:02d}.png')
-            return (p, title) if (os.path.exists(p) or screenshot(browser, url, p)) else None
+            p = os.path.join(shots_dir, shot_name(url))
+            return (p, title) if (good_shot(p) or screenshot(browser, url, p)) else None
 
         progress('shots', 0, len(links), f'Screenshotting {len(links)} articles')
         with ThreadPoolExecutor(6) as ex:
@@ -329,7 +385,7 @@ def main():
         frame = compose(p, b, W, H, word_h, px * W, py * H, a.highlight, a.max_upscale)
         frame.save(os.path.join(frames_dir, f'{n:05d}.png'))
         for k in range(1, d):
-            os.link(os.path.join(frames_dir, f'{n:05d}.png'), os.path.join(frames_dir, f'{n + k:05d}.png'))
+            hold_frame(os.path.join(frames_dir, f'{n:05d}.png'), os.path.join(frames_dir, f'{n + k:05d}.png'))
         n += d
 
     # 4. encode

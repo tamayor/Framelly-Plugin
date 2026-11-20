@@ -30,6 +30,13 @@ def emit(o):
     sys.stdout.flush()
 
 
+def write_image(path, img, params):
+    """cv2.imwrite, raising when nothing was written (it returns False on a full disk or a missing folder)."""
+    if not cv2.imwrite(path, img, params):
+        raise RuntimeError("could not write " + path)
+    return True
+
+
 def session(model):
     import onnxruntime as ort
     opts = ort.SessionOptions()
@@ -222,10 +229,10 @@ def main():
             union = b if union is None else (min(union[0], b[0]), min(union[1], b[1]), max(union[2], b[2]), max(union[3], b[3]))
         # straight alpha: the original footage pixels inside, RVM's foreground only on the soft edge
         rgba = np.dstack([decontaminate(img, fgr[0].transpose(1, 2, 0), al), (al * 255.0 + 0.5).astype(np.uint8)])
-        pending.append(pool.submit(cv2.imwrite, os.path.join(out, "c%05d.png" % i), rgba, [cv2.IMWRITE_PNG_COMPRESSION, 1]))
+        pending.append(pool.submit(write_image, os.path.join(out, "c%05d.png" % i), rgba, [cv2.IMWRITE_PNG_COMPRESSION, 1]))
         if want_plate:
             plate, fill = clean_plate(img, al, fill)
-            pending.append(pool.submit(cv2.imwrite, os.path.join(out, "p%05d.jpg" % i), plate, [cv2.IMWRITE_JPEG_QUALITY, 92]))
+            pending.append(pool.submit(write_image, os.path.join(out, "p%05d.jpg" % i), plate, [cv2.IMWRITE_JPEG_QUALITY, 92]))
         while len(pending) > 8:
             pending.pop(0).result()
         if i % 3 == 0 or i == n - 1:

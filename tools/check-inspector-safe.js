@@ -11,6 +11,8 @@
 //   2. apply.js no longer places presets through presetTitleFor, or no longer reconnects the output afterwards
 //      (Resolve wires an inserted title's MediaOut to "Template", which skips any effects after the text).
 
+module.exports = { codePart };
+
 const fs = require('fs');
 const path = require('path');
 
@@ -18,6 +20,27 @@ const ROOT = path.join(__dirname, '..');
 const SRC = path.join(ROOT, 'src');
 const RISKY = /\b(ImportFusionComp|LoadFusionCompByName|AddFusionComp|LoadSettings)\s*\(|[.:]Paste\s*\(/;
 const MARK = /inspector-ok:\s*\S/;
+
+// The line without its comment: the comment marker of the file's language (// in .js, # in .py, -- in .lua), and
+// only outside a quoted string ('#ff0000', 'https://...' and Lua's # length operator are code).
+const COMMENT = { '.js': '//', '.py': '#', '.lua': '--' };
+function codePart(line, ext) {
+    const mark = COMMENT[ext];
+    if (!mark) return line;
+    let quote = null;
+    for (let i = 0; i < line.length; i++) {
+        const ch = line[i];
+        if (quote) {
+            if (ch === '\\') i++;
+            else if (ch === quote) quote = null;
+        } else if (ch === '"' || ch === "'" || (ch === '`' && ext === '.js')) {
+            quote = ch;
+        } else if (line.startsWith(mark, i)) {
+            return line.slice(0, i);
+        }
+    }
+    return line;
+}
 
 function files(dir) {
     const out = [];
@@ -29,26 +52,31 @@ function files(dir) {
     return out;
 }
 
-const problems = [];
-for (const f of files(SRC)) {
-    const lines = fs.readFileSync(f, 'utf8').split('\n');
-    lines.forEach((line, i) => {
-        const code = line.replace(/\/\/.*$|#.*$/, '');      // a mention in a comment is fine
-        if (!RISKY.test(code)) return;
-        if (MARK.test(line) || (i > 0 && MARK.test(lines[i - 1]))) return;
-        problems.push(path.relative(ROOT, f) + ':' + (i + 1) + '  ' + line.trim());
-    });
+function main() {
+    const problems = [];
+    for (const f of files(SRC)) {
+        const lines = fs.readFileSync(f, 'utf8').split('\n');
+        const ext = path.extname(f);
+        lines.forEach((line, i) => {
+            const code = codePart(line, ext);      // a mention in a comment is fine
+            if (!RISKY.test(code)) return;
+            if (MARK.test(line) || (i > 0 && MARK.test(lines[i - 1]))) return;
+            problems.push(path.relative(ROOT, f) + ':' + (i + 1) + '  ' + line.trim());
+        });
+    }
+
+    const apply = fs.readFileSync(path.join(SRC, 'main', 'apply.js'), 'utf8');
+    if (!/presetTitleFor\s*\(/.test(apply)) problems.push('src/main/apply.js  no longer calls presetTitleFor(): presets must be inserted as title templates');
+    if (!/bridgeCall\(\s*'set_output'/.test(apply)) problems.push('src/main/apply.js  no longer reconnects the output (set_output): Resolve wires an inserted title to "Template", which drops wiggle / glitch / stop-motion effects');
+
+    if (problems.length) {
+        console.error('Inspector check failed. These replace a clip\'s Fusion comp, which empties Resolve\'s Inspector for that clip:\n');
+        for (const p of problems) console.error('  ' + p);
+        console.error('\nInsert the preset as a title template instead (presetTitleFor in src/main/title-templates.js). If the clip is never');
+        console.error('shown to the user, add a comment "// inspector-ok: <why>" on the line or the line above.');
+        process.exit(1);
+    }
+    console.log('Inspector check OK.');
 }
 
-const apply = fs.readFileSync(path.join(SRC, 'main', 'apply.js'), 'utf8');
-if (!/presetTitleFor\s*\(/.test(apply)) problems.push('src/main/apply.js  no longer calls presetTitleFor(): presets must be inserted as title templates');
-if (!/bridgeCall\(\s*'set_output'/.test(apply)) problems.push('src/main/apply.js  no longer reconnects the output (set_output): Resolve wires an inserted title to "Template", which drops wiggle / glitch / stop-motion effects');
-
-if (problems.length) {
-    console.error('Inspector check failed. These replace a clip\'s Fusion comp, which empties Resolve\'s Inspector for that clip:\n');
-    for (const p of problems) console.error('  ' + p);
-    console.error('\nInsert the preset as a title template instead (presetTitleFor in src/main/title-templates.js). If the clip is never');
-    console.error('shown to the user, add a comment "// inspector-ok: <why>" on the line or the line above.');
-    process.exit(1);
-}
-console.log('Inspector check OK.');
+if (require.main === module) main();
