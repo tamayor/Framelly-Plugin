@@ -21,7 +21,7 @@ const { brollSuggestFromTexts, propsFor } = require('./broll-suggest');
 module.exports = {
     brollEffects, brollPreview, brollPlace, brollPlaceMany, brollAdjust, brollRemove, brollList, brollSuggest,
     brollStatus, brollCancel, brollOpenFolder, brollFinalize, draftScale, brollShutdown, brollSuggestFromTexts, brollFrame, brollStrip, brollTrace, brollSync, brollLandingPlan, brollFromPlayhead, findWordHit, brollWordLane,
-    brollVibeProps, brollRestyle,
+    brollVibeProps, brollRestyle, adjustRange,
     // for the Collage pane (collage.js): the same warm renderer, timeline and placement
     renderJob, findNode, brollDir, currentTl, placeFile
 };
@@ -561,7 +561,7 @@ async function brollPlace(event, o) {
     const rec = {
         id: uid, effect: e.id, name: e.name, props, timeline: tlName, start: r.start, frames: r.frames, fps: meta.fps,
         width: meta.width, height: meta.height, file: out, version: 1, itemId: placed.itemId, track: placed.track,
-        subtitle: r.subtitle, draft: draft || undefined, created: new Date().toISOString()
+        subtitle: r.subtitle, marks: r.marks || undefined, extend: extendF || undefined, draft: draft || undefined, created: new Date().toISOString()
     };
     const all = readJson(PLACED_FILE, []);
     all.push(rec);
@@ -604,6 +604,34 @@ function findRec(all, id) {
     return i;
 }
 
+// A clip on a subtitle follows that subtitle when it is re-rendered (Finalize, restyle, a new prop), so retiming the
+// subtitle moves the clip too. Not when a length / start / extend was asked for, not for an In -> Out clip (it has
+// its own range), and not when the clip was moved or trimmed by hand in Resolve since it was placed.
+function followsSubtitle(rec, o, curStart, curDur) {
+    if (!rec.subtitle || rec.marks) return false;
+    if (Number(o.seconds) > 0 || Number(o.frames) > 0 || Number(o.extend) > 0 || Number.isFinite(Number(o.startFrame))) return false;
+    const moved = Number.isFinite(Number(rec.start)) && Number.isFinite(Number(rec.frames)) && (Number(curStart) !== Number(rec.start) || Number(curDur) !== Number(rec.frames));
+    return !moved;
+}
+
+// Where an adjusted clip goes: { start, frames }. `cur` is the clip on the timeline now, `sub` the subtitle it was
+// placed on as it is now (or null). The clip's "Extend by" (rec.extend, frames) is kept when it follows the subtitle.
+function adjustRange(rec, o, cur, sub, fps) {
+    let frames = Number(cur.frames) || rec.frames;
+    if (Number(o.extend) > 0) frames += Math.round(Math.min(30, Number(o.extend)) * fps);
+    let start = Number.isFinite(Number(o.startFrame)) ? Math.round(Number(o.startFrame)) : Number(cur.start);
+    if (Number.isFinite(Number(o.seconds)) && Number(o.seconds) > 0) frames = Math.round(Number(o.seconds) * fps);
+    if (Number.isFinite(Number(o.frames)) && Number(o.frames) > 0) frames = Math.round(Number(o.frames));
+    if (sub && followsSubtitle(rec, o, cur.start, cur.frames)) {
+        const norm = (t) => String(t || '').replace(/\s+/g, ' ').trim();
+        if (sub.end - sub.start >= 4 && (!rec.subtitle.text || norm(sub.text) === norm(rec.subtitle.text))) {
+            start = sub.start;
+            frames = Math.min(sub.end - sub.start + (Number(rec.extend) || 0), Math.round(fps * 60));
+        }
+    }
+    return { start, frames };
+}
+
 async function brollAdjust(event, o) {
     o = o || {};
     const reg = registry();
@@ -618,20 +646,12 @@ async function brollAdjust(event, o) {
     const item = items.get(rec.itemId);
     if (!item) throw new Error('The clip is no longer on the timeline (deleted or the id changed). Place it again.');
     const [curStart, curDur] = await Promise.all([item.GetStart(), item.GetDuration()]);
-    let frames = Number(curDur) || rec.frames;
-    if (Number(o.extend) > 0) frames += Math.round(Math.min(30, Number(o.extend)) * meta.fps);
-    let newStart = Number.isFinite(Number(o.startFrame)) ? Math.round(Number(o.startFrame)) : Number(curStart);
-    const hasCustomSec = Number.isFinite(Number(o.seconds)) && Number(o.seconds) > 0;
-    if (hasCustomSec) frames = Math.round(Number(o.seconds) * meta.fps);
-    if (Number.isFinite(Number(o.frames)) && Number(o.frames) > 0) frames = Math.round(Number(o.frames));
-    // A clip on a subtitle follows that subtitle: same start, same length (unless a length / start / extend was asked for)
-    if (rec.subtitle && !rec.marks && !hasCustomSec && !(Number(o.frames) > 0) && !Number.isFinite(Number(o.startFrame)) && !(Number(o.extend) > 0)) {
-        try {
-            const norm = (t) => String(t || '').replace(/\s+/g, ' ').trim();
-            const s = (await getSubtitles(tl, false)).find(x => x.index === Number(rec.subtitle.index));
-            if (s && s.end - s.start >= 4 && (!rec.subtitle.text || norm(s.text) === norm(rec.subtitle.text))) { newStart = s.start; frames = s.end - s.start; }
-        } catch (err) { /* keep the clip's own range */ }
+    let sub = null;
+    if (followsSubtitle(rec, o, curStart, curDur)) {
+        try { sub = (await getSubtitles(tl, false)).find(x => x.index === Number(rec.subtitle.index)) || null; } catch (err) { /* keep the clip's own range */ }
     }
+    let { start: newStart, frames } = adjustRange(rec, o, { start: curStart, frames: curDur }, sub, meta.fps);
+    const hasCustomSec = Number.isFinite(Number(o.seconds)) && Number(o.seconds) > 0;
     let landed = null;
     if (o.landOnWord && o.settle === undefined && !Number.isFinite(Number(o.startFrame))) {
         const plan = await brollLandingPlan(tl, meta, e.id, props, newStart, newStart + frames, rec.subtitle && rec.subtitle.index);

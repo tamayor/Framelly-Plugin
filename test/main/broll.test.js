@@ -144,3 +144,32 @@ test('"I\'m" only makes a lower third when a name follows', () => {
     const out = brollSuggestFromTexts([sub(1, "I'm not sure that works", 0), sub(2, "and I'm going to show you", 6)], { max: 5, minGap: 1 }, REG, FPS);
     assert.equal(out.filter(s => s.effect === 'lower-third').length, 0);
 });
+
+// Regression (PM-01): Finalize / restyle / a prop change re-renders a placed clip. It used to snap an In -> Out clip
+// and an extended clip back to the first subtitle's range, and undo a trim made by hand in Resolve.
+test('adjustRange: what an adjusted B-roll clip keeps', () => {
+    const { adjustRange } = env.main('broll');
+    const fps = 25;
+    const s3 = { index: 3, text: 'the bar is this', start: 100, end: 150 };
+    const onSub = { subtitle: { index: 3, text: 'the bar is this' }, start: 100, frames: 50 };
+    // a clip on a subtitle follows it when the subtitle was retimed
+    assert.deepEqual(adjustRange(onSub, {}, { start: 100, frames: 50 }, { ...s3, start: 110, end: 170 }, fps), { start: 110, frames: 60 });
+    // ...unless the subtitle now says something else
+    assert.deepEqual(adjustRange(onSub, {}, { start: 100, frames: 50 }, { ...s3, text: 'other words', start: 110, end: 170 }, fps), { start: 100, frames: 50 });
+    // an extended clip keeps its extension while following
+    const ext = { ...onSub, frames: 100, extend: 50 };
+    assert.deepEqual(adjustRange(ext, {}, { start: 100, frames: 100 }, s3, fps), { start: 100, frames: 100 });
+    assert.deepEqual(adjustRange(ext, {}, { start: 100, frames: 100 }, { ...s3, end: 160 }, fps), { start: 100, frames: 110 });
+    // an In -> Out clip keeps its own range
+    const marks = { subtitle: { index: 3, text: 'the bar is this' }, marks: true, start: 90, frames: 300 };
+    assert.deepEqual(adjustRange(marks, {}, { start: 90, frames: 300 }, s3, fps), { start: 90, frames: 300 });
+    // a clip trimmed or moved by hand in Resolve keeps the edit
+    assert.deepEqual(adjustRange(onSub, {}, { start: 100, frames: 40 }, s3, fps), { start: 100, frames: 40 });
+    assert.deepEqual(adjustRange(onSub, {}, { start: 120, frames: 50 }, s3, fps), { start: 120, frames: 50 });
+    // asked-for values win
+    assert.deepEqual(adjustRange(onSub, { seconds: 4 }, { start: 100, frames: 50 }, s3, fps), { start: 100, frames: 100 });
+    assert.deepEqual(adjustRange(onSub, { frames: 30, startFrame: 80 }, { start: 100, frames: 50 }, s3, fps), { start: 80, frames: 30 });
+    assert.deepEqual(adjustRange(onSub, { extend: 2 }, { start: 100, frames: 50 }, s3, fps), { start: 100, frames: 100 });
+    // a record from before start / frames were kept: follows as it always did
+    assert.deepEqual(adjustRange({ subtitle: onSub.subtitle }, {}, { start: 100, frames: 40 }, { ...s3, start: 110 }, fps), { start: 110, frames: 40 });
+});

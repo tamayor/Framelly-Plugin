@@ -116,6 +116,7 @@
     "wordSpans:function"
   ],
   "broll.js": [
+    "adjustRange:function",
     "brollAdjust:function",
     "brollCancel:function",
     "brollDir:function",
