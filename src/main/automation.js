@@ -541,11 +541,12 @@ const TOOLS = {
     // are found by unique id, so they are removed wherever they were dragged to since.
     async remove_placed(args) {
         const id = String((args && args.itemId) || '');
-        const i = placed.findIndex(p => p.itemId === id);
-        if (i < 0) throw new Error('Only clips placed through automation this session can be removed (see list_placed).');
+        // the record itself is kept, not its index: other calls can change the list during the awaits below
+        const rec = placed.find(p => p.itemId === id);
+        if (!rec) throw new Error('Only clips placed through automation this session can be removed (see list_placed).');
+        const forget = () => { const k = placed.indexOf(rec); if (k >= 0) placed.splice(k, 1); };
         await waitFree(10000);
         const { tl } = await currentTimeline();
-        const rec = placed[i];
         const audioIds = [rec.audioId, ...(rec.extraAudioIds || [])].filter(Boolean);
         const vids = await findItemsByIds(tl, [rec.itemId], 'video');
         let auds = await findItemsByIds(tl, audioIds, 'audio');
@@ -553,15 +554,15 @@ const TOOLS = {
         // a Glass Blur caption's frost (ELSA Glass effects on the footage under it) goes with it
         let glassRemoved = 0;
         try { glassRemoved = ((await bridgeCall('glass_remove', { item: rec.itemId }, 15000)) || {}).removed || 0; } catch (e) { /* none */ }
-        if (!found.length) { placed.splice(i, 1); return { removed: false, note: 'The clip is no longer on the timeline.', glassRemoved }; }
+        if (!found.length) { forget(); return { removed: false, note: 'The clip is no longer on the timeline.', glassRemoved }; }
         let ok = await tl.DeleteClips(found, false);
         // a copy that survived the batch delete (Resolve sometimes skips linked clips) is deleted on its own
         try {
             auds = await findItemsByIds(tl, audioIds, 'audio');
             for (const aid of audioIds) { const it = auds.get(aid); if (it) ok = (await tl.DeleteClips([it], false)) && ok; }
         } catch (e) { /* ignore */ }
-        const soundsRemoved = found.length - 1;
-        if (ok) placed.splice(i, 1);
+        const soundsRemoved = found.length - (vids.get(rec.itemId) ? 1 : 0);
+        if (ok) forget();
         // the subtitle clips this placement turned off come back on, unless another placed clip still covers them
         let restored = 0;
         if (ok) {
@@ -588,8 +589,9 @@ function handle(req, res) {
     // Only local scripts with the token: no browser page (Origin) and no other host name (DNS rebinding).
     const host = String(req.headers.host || '');
     if (req.headers.origin || !/^(127\.0\.0\.1|localhost)(:\d+)?$/.test(host)) return send(res, 403, { ok: false, error: 'forbidden' });
-    const got = String(req.headers['x-sa-token'] || '');
-    if (!token || got.length !== token.length || !crypto.timingSafeEqual(Buffer.from(got), Buffer.from(token))) return send(res, 401, { ok: false, error: 'bad token' });
+    // compared as bytes: a header of the same length in characters can be longer in bytes (timingSafeEqual throws then)
+    const got = Buffer.from(String(req.headers['x-sa-token'] || ''));
+    if (!token || got.length !== Buffer.byteLength(token) || !crypto.timingSafeEqual(got, Buffer.from(token))) return send(res, 401, { ok: false, error: 'bad token' });
     if (req.method !== 'POST' || req.url !== '/call') return send(res, 404, { ok: false, error: 'not found' });
     let raw = '';
     req.on('data', (c) => { raw += c; if (raw.length > 1e6) req.destroy(); });

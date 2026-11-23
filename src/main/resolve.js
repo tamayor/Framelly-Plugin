@@ -393,7 +393,8 @@ async function setSubtitlesEnabled(tl, range, enabled) {
         const tracks = (await tl.GetTrackCount('subtitle')) || 0;
         for (let t = 1; t <= tracks; t++) {
             if (range.track && Number(range.track) !== t) continue;
-            const its = (await tl.GetItemListInTrack('subtitle', t)) || [];
+            const raw = (await tl.GetItemListInTrack('subtitle', t)) || [];
+            const its = Array.isArray(raw) ? raw : Object.values(raw);      // as the other readers here
             for (let i = 0; i < its.length; i += RESOLVE_BATCH) {
                 const part = its.slice(i, i + RESOLVE_BATCH);
                 const se = await Promise.all(part.map(async (it) => { try { return [await it.GetStart(), await it.GetEnd()]; } catch (e) { return null; } }));
@@ -431,7 +432,8 @@ async function findItemsByIds(tl, ids, kind) {
     const tracks = (await tl.GetTrackCount(kind || 'video')) || 0;
     let scanned = 0;
     for (let t = 1; t <= tracks && found.size < want.size; t++) {
-        const its = (await tl.GetItemListInTrack(kind || 'video', t)) || [];
+        const raw = (await tl.GetItemListInTrack(kind || 'video', t)) || [];
+        const its = Array.isArray(raw) ? raw : Object.values(raw);      // as the other readers here
         for (let i = 0; i < its.length && found.size < want.size; i += RESOLVE_BATCH) {
             const part = its.slice(i, i + RESOLVE_BATCH);
             const got = await Promise.all(part.map(it => Promise.resolve(it.GetUniqueId()).then(String).catch(() => null)));

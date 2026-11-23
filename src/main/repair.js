@@ -20,7 +20,7 @@ const path = require('path');
 const state = require('./state');
 const { ANIM_DIR } = require('./config');
 const { bridgeCall } = require('./fusion-bridge');
-const { blockEnd } = require('./fusion-setting');
+const { blockEnd, presetText } = require('./fusion-setting');
 const { loadLib } = require('./library');
 const { dlog } = require('./log');
 const { settleLater } = require('./settle');
@@ -37,7 +37,9 @@ const PLAIN = /^(Text\+|MultiText)$/;
 // The top-level tool names of an installed title template (EXTRA ones left out), or null when it cannot be read.
 function templateTools(title) {
     try {
-        const s = fs.readFileSync(path.join(titlesDir(), title + '.setting'), 'utf8');
+        const e = presetText(path.join(titlesDir(), title + '.setting'));      // the shared preset-file cache (fusion-setting.js)
+        const s = e && e.text;
+        if (!s) return null;
         const m = /\bTools\s*=\s*(?:ordered\(\)\s*)?\{/.exec(s);
         if (!m) return null;
         const open = m.index + m[0].length - 1, close = blockEnd(s, open);
@@ -132,15 +134,26 @@ async function rebuildOne(tl, meta, f) {
         await undo();
         throw e;
     }
-    // The old clip goes first, then the new one takes its place (a stray on V1 moves to the lowest free layer).
-    try { if (!(await tl.DeleteClips([item], false))) throw new Error('refused'); } catch (e) {
+    // The new clip first moves to its track (still at the end of the timeline, where it cannot touch anything), so the
+    // old clip is removed only once its replacement is safely off V1; then the new one slides into the old one's place
+    // (a stray on V1 moves to the lowest free layer).
+    let dest = f.track;
+    try { if (!(dest >= 2)) dest = await pickTrack(tl, 'video', 0, f.start, f.start + f.frames, 2, []); } catch (e) {
         await undo();
+        throw new Error('No free layer for the rebuilt clip (' + (e && e.message || e) + '), so nothing was changed.');
+    }
+    const mv = await moveTitleSafe(tl, fresh, dest, tlEnd, tlEnd);      // track change only (moveTitleSafe deletes it on failure)
+    if (!mv.ok) throw new Error(mv.error + ' The old clip was kept.');
+    try { if (!(await tl.DeleteClips([item], false))) throw new Error('refused'); } catch (e) {
+        try { await tl.DeleteClips([fresh], false); } catch (x) { /* ignore */ }
         throw new Error('The old clip could not be removed (' + (e && e.message || e) + '), so nothing was changed.');
     }
-    let dest = f.track;
-    if (!(dest >= 2)) dest = await pickTrack(tl, 'video', 0, f.start, f.start + f.frames, 2, []);
-    const mv = await moveTitleSafe(tl, fresh, dest, f.start, tlEnd);
-    if (!mv.ok) throw new Error(mv.error + (mv.leftOnTrack ? ' The rebuilt clip is at the end of the timeline on V' + dest + '; the old clip was removed.' : ' The old clip was removed.'));
+    if (f.start !== tlEnd) {
+        let ok = false, st = null, landed = null;
+        try { ok = await fresh.SetPosition({ trackIndex: dest, startFrame: f.start }); } catch (e) { ok = false; }
+        try { st = await fresh.GetStart(); landed = await fresh.GetTrackTypeAndIndex(); } catch (e) { /* ignore */ }
+        if (!ok || st !== f.start || !landed || landed[1] !== dest) throw new Error('The title is on V' + dest + ' but could not be moved to the subtitle position. The rebuilt clip is at the end of the timeline on V' + dest + '; the old clip was removed.');
+    }
     if (props) {
         const keep = {};
         for (const k of PROPS) if (props[k] !== undefined && props[k] !== null) keep[k] = props[k];

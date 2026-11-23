@@ -82,4 +82,6 @@ async function settleNow() {
         try { await runPass(true); } catch (e) { break; }
     }
     if (timer) { clearTimeout(timer); timer = null; }
+    // wakes still owed (a placement or a preview was running, so nothing could run now) are tried again later
+    if (pending.size) schedule(cfg().idle);
 }

@@ -203,7 +203,10 @@ async function refitRowSfx(tl, project, meta, textItem, itemId, projectCopy) {
         const end = textStart + Math.max(1, Math.min(Math.round(Number(set.end) || 0) || (clipEnd - textStart), clipEnd - textStart));
         const l = Object.assign({}, set.layer, { track: set.track });
         const warnings = [];
-        const copies = await placeRowSfx(tl, project, meta, l, frames, textStart, end, tlStart, [], projectCopy ? textItem : null, warnings, null, projectCopy);
+        // a failed placement counts as failed: the sets already moved are still written to seg-sounds.json below
+        let copies = [];
+        try { copies = await placeRowSfx(tl, project, meta, l, frames, textStart, end, tlStart, [], projectCopy ? textItem : null, warnings, null, projectCopy); }
+        catch (e) { dlog('ROW-SFX-REFIT-FAIL', String(e && e.message || e)); copies = []; }
         if (!copies.length) { failed++; continue; }
         moved += copies.length;
         swaps.push({ from: there, to: copies.map(x => x.id), link: copies.filter(x => x.link).map(x => x.id) });

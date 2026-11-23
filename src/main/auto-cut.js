@@ -544,7 +544,7 @@ async function cutBuild(event, opts) {
             first = [];
         }
         const todo = first.length ? pieces.slice(1) : pieces;
-        const skipped = [];
+        const skipped = [], refused = new Set();
         for (let i = 0; i < todo.length; i += BATCH) {
             if (job.cancelled) throw new Error('Cancelled (the timeline "' + name + '" is partly built)');
             send({ phase: 'build', text: 'Placing pieces ' + (i + 1) + '–' + Math.min(todo.length, i + BATCH) + ' of ' + todo.length + '…', done: i, total: todo.length });
@@ -556,12 +556,14 @@ async function cutBuild(event, opts) {
                 for (const p of batch) {
                     let one = null;
                     try { one = await mp.AppendToTimeline([info(p, fix)]); } catch (e) { one = null; }
-                    if (!one || !one.length) skipped.push(p.s.name + ' ' + p.a + '–' + p.b);
+                    if (!one || !one.length) { skipped.push(p.s.name + ' ' + p.a + '–' + p.b); refused.add(p); }
                 }
                 if (skipped.length >= batch.length) throw new Error('Resolve refused every piece from ' + (i + 1) + ' on (' + skipped[0] + ')');
             }
         }
         if (skipped.length) dlog('CUT-BUILD skipped', skipped.join(', '));
+        // the pieces on the cut, in order: the clips on V1 / A1 line up with these, not with every planned piece
+        const placed = pieces.filter(p => !refused.has(p));
 
         const vItems = (await tl.GetItemListInTrack('video', 1)) || [];
         const aItems = (await tl.GetItemListInTrack('audio', 1)) || [];
@@ -576,35 +578,35 @@ async function cutBuild(event, opts) {
             const tf = new Map();
             for (const s of plan.sources) tf.set(s.id, await transformOf(itemById.get(s.id)));
             let n = 0;
-            for (let i = 0; i < Math.min(vItems.length, pieces.length); i++) {
-                const t = tf.get(pieces[i].s.id);
+            for (let i = 0; i < Math.min(vItems.length, placed.length); i++) {
+                const t = tf.get(placed[i].s.id);
                 if (t) { try { await vItems[i].SetProperties(t); n++; } catch (e) { /* one clip keeps the default framing */ } }
             }
             if (n) notes.push('zoom / position copied to ' + n + ' pieces');
         }
 
         // voice level, per source clip
-        if (prefs.level && aItems.length === pieces.length) {
+        if (prefs.level && aItems.length === placed.length) {
             let n = 0;
-            for (let i = 0; i < pieces.length; i++) {
-                const r = byId.get(pieces[i].s.id);
+            for (let i = 0; i < placed.length; i++) {
+                const r = byId.get(placed[i].s.id);
                 if (!r || r.lufs === null || r.lufs === undefined) continue;
                 const gain = Math.max(-12, Math.min(12, prefs.lufs - r.lufs));
                 if (Math.abs(gain) < 0.5) continue;
                 try { await aItems[i].SetProperties({ AudioVolumeEnabled: true, AudioVolume: Math.round(gain * 10) / 10 }); n++; } catch (e) { /* level is a convenience */ }
             }
             if (n) notes.push('voice levelled to ' + prefs.lufs + ' LUFS');
-        } else if (prefs.level && aItems.length !== pieces.length) notes.push('voice not levelled (audio pieces did not line up)');
+        } else if (prefs.level && aItems.length !== placed.length) notes.push('voice not levelled (audio pieces did not line up)');
 
         // markers at the joins where a retake / stutter / filler / long pause was taken out
         let marks = 0;
         if (prefs.markers || prefs.markPauses > 0) {
             const joins = [];
             let rec = 0;
-            for (let i = 0; i < pieces.length; i++) {
-                const p = pieces[i];
+            for (let i = 0; i < placed.length; i++) {
+                const p = placed[i];
                 rec += Math.round((p.b - p.a) * meta.fps / p.s.fps);
-                const n = pieces[i + 1];
+                const n = placed[i + 1];
                 if (n && n.s === p.s) joins.push({ s: p.s, from: p.b / p.s.fps, to: n.a / p.s.fps, at: rec });
             }
             const out = [];

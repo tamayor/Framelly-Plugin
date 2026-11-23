@@ -465,6 +465,7 @@ async function liveRemove(marks) {
 
 // Apply: keeps the clip (it is no longer temporary) and adds the sound after it, like "Add to timeline".
 async function liveFinish(event, req) {
+    req = req || {};
     if (!state.liveSession) return { ok: false, error: 'No Resolve preview is running' };
     if (state.applying) return { ok: false, error: 'Resolve is busy. Try again in a moment.' };
     const s = state.liveSession;
@@ -474,7 +475,7 @@ async function liveFinish(event, req) {
     try {
         const lib = loadLib();
         const anim = lib.animations.find(a => a.id === s.animId) || {};
-        if (req) req.tail = tailFor(req, anim);          // a MultiText clip ends with its caption
+        req.tail = tailFor(req, anim);          // a MultiText clip ends with its caption
         const project = await getProject();
         const tl = project && await project.GetCurrentTimeline();
         if (!tl) throw new Error('Open a timeline in Resolve');
@@ -494,61 +495,65 @@ async function liveFinish(event, req) {
         else { const n = req.sfx || presetSfxName(anim) || lib.defaultSfx; if (n) sfxPath = sfxFilePath(n); }
         let sfxTrack = null, clipsLinked = false;
         const trackNotes = [];
-        if (s.sfxId) {
-            // the sound is already on the timeline from the preview (maybe moved or trimmed by hand): keep it as it is
-            let sfxItem = null;
-            try { if (s.sfxItem && String(await s.sfxItem.GetUniqueId()) === String(s.sfxId)) sfxItem = s.sfxItem; } catch (e) { sfxItem = null; }
-            if (!sfxItem) sfxItem = await findAudioItemById(tl, s.sfxId);
-            regDel(s.sfxId);
-            if (sfxItem) {
-                await relinkToProjectCopy(project, sfxItem);      // placed from the library while previewing
-                state.lastPlacedAudioId = String(s.sfxId);
-                try { const ti2 = await sfxItem.GetTrackTypeAndIndex(); sfxTrack = ti2 ? ti2[1] : null; } catch (e) { /* ignore */ }
-                const wantLink = req.linked !== false;
-                const vol0 = (req.sfxVolume !== undefined && req.sfxVolume !== null) ? Number(req.sfxVolume) : (anim.sfxVolume != null ? Number(anim.sfxVolume) : 0);
-                let vol = vol0;
-                try {      // peak window (sfx-level.js), measured on the part of the sound the clip uses now
-                    const lo = Number(await sfxItem.GetLeftOffset()) || 0, du = Number(await sfxItem.GetDuration()) || 0;
-                    vol = await levelVolume(sfxPath, vol0, lo, du, meta && meta.fps);
-                    await applyLevel(sfxItem, vol, 0);
-                } catch (e) { vol = vol0; }
-                try {
-                    let ok = false;
-                    if (typeof tl.SetClipsLinked === 'function') ok = await tl.SetClipsLinked([item, sfxItem], wantLink);
-                    if (!ok) ok = await bridgeCall('link_clips', { videoId: itemId, audioId: String(s.sfxId), linked: wantLink, volume: vol });
-                    clipsLinked = !!(wantLink && ok);
-                } catch (e) { warnings.push('Could not link text and sound clips: ' + e.message); }
-            }
-        } else if (req.useSfx !== false && sfxPath && !s.lone) {
-            if (!fs.existsSync(sfxPath)) warnings.push('The sound effect file is missing.');
-            else {
-                const { mp, item: mpi } = await importSfx(project, sfxPath, true);      // kept = applied: the timeline keeps its own copy
-                if (!mpi) warnings.push('Resolve could not import the sound effect.');
-                else {
-                    const textEnd = Math.round(Number(req.end) + (Number(req.tail) || 0));
-                    const cut = await sfxCutFrames(mpi, meta, sfxCutFor(req, anim, sfxPath, meta, textStart, textEnd));
-                    const sfxStart = Math.max(tlStart, textStart + Math.round(req.sfxOffset || 0));
-                    sfxTrack = await pickTrack(tl, 'audio', req.sfxTrack || 0, sfxStart, sfxStart + cut.len, 1, trackNotes, req.place);
-                    const sfxItem = await appendSfxCut(mp, mpi, sfxTrack, sfxStart, cut);
-                    if (!sfxItem) warnings.push('The sound effect could not be placed.');
-                    else {
-                        if (cut.fadeFailed) warnings.push(FADE_WARNING);
-                        const vol0 = (req.sfxVolume !== undefined && req.sfxVolume !== null) ? Number(req.sfxVolume) : (anim.sfxVolume != null ? Number(anim.sfxVolume) : 0);
-                        const vol = await levelVolume(sfxPath, vol0, cut.trimIn, cut.len, meta && meta.fps);      // peak window (sfx-level.js)
+        // From here the preview is a kept clip (no longer in the registry, the session is over): a sound that cannot be
+        // placed is a warning, so the rest of Apply (layered sounds, the preset's transform, the subtitle) still runs.
+        try {
+            if (s.sfxId) {
+                // the sound is already on the timeline from the preview (maybe moved or trimmed by hand): keep it as it is
+                let sfxItem = null;
+                try { if (s.sfxItem && String(await s.sfxItem.GetUniqueId()) === String(s.sfxId)) sfxItem = s.sfxItem; } catch (e) { sfxItem = null; }
+                if (!sfxItem) sfxItem = await findAudioItemById(tl, s.sfxId);
+                regDel(s.sfxId);
+                if (sfxItem) {
+                    await relinkToProjectCopy(project, sfxItem);      // placed from the library while previewing
+                    state.lastPlacedAudioId = String(s.sfxId);
+                    try { const ti2 = await sfxItem.GetTrackTypeAndIndex(); sfxTrack = ti2 ? ti2[1] : null; } catch (e) { /* ignore */ }
+                    const wantLink = req.linked !== false;
+                    const vol0 = (req.sfxVolume !== undefined && req.sfxVolume !== null) ? Number(req.sfxVolume) : (anim.sfxVolume != null ? Number(anim.sfxVolume) : 0);
+                    let vol = vol0;
+                    try {      // peak window (sfx-level.js), measured on the part of the sound the clip uses now
+                        const lo = Number(await sfxItem.GetLeftOffset()) || 0, du = Number(await sfxItem.GetDuration()) || 0;
+                        vol = await levelVolume(sfxPath, vol0, lo, du, meta && meta.fps);
                         await applyLevel(sfxItem, vol, 0);
-                        const sfxId = String(await sfxItem.GetUniqueId());
-                        state.lastPlacedAudioId = sfxId;
-                        const wantLink = req.linked !== false;
-                        try {
-                            let ok = false;
-                            if (typeof tl.SetClipsLinked === 'function') ok = await tl.SetClipsLinked([item, sfxItem], wantLink);
-                            if (!ok) ok = await bridgeCall('link_clips', { videoId: itemId, audioId: sfxId, linked: wantLink, volume: vol });
-                            clipsLinked = !!(wantLink && ok);
-                        } catch (e) { warnings.push('Could not link text and sound clips: ' + e.message); }
+                    } catch (e) { vol = vol0; }
+                    try {
+                        let ok = false;
+                        if (typeof tl.SetClipsLinked === 'function') ok = await tl.SetClipsLinked([item, sfxItem], wantLink);
+                        if (!ok) ok = await bridgeCall('link_clips', { videoId: itemId, audioId: String(s.sfxId), linked: wantLink, volume: vol });
+                        clipsLinked = !!(wantLink && ok);
+                    } catch (e) { warnings.push('Could not link text and sound clips: ' + e.message); }
+                }
+            } else if (req.useSfx !== false && sfxPath && !s.lone) {
+                if (!fs.existsSync(sfxPath)) warnings.push('The sound effect file is missing.');
+                else {
+                    const { mp, item: mpi } = await importSfx(project, sfxPath, true);      // kept = applied: the timeline keeps its own copy
+                    if (!mpi) warnings.push('Resolve could not import the sound effect.');
+                    else {
+                        const textEnd = Math.round(Number(req.end) + (Number(req.tail) || 0));
+                        const cut = await sfxCutFrames(mpi, meta, sfxCutFor(req, anim, sfxPath, meta, textStart, textEnd));
+                        const sfxStart = Math.max(tlStart, textStart + Math.round(req.sfxOffset || 0));
+                        sfxTrack = await pickTrack(tl, 'audio', req.sfxTrack || 0, sfxStart, sfxStart + cut.len, 1, trackNotes, req.place);
+                        const sfxItem = await appendSfxCut(mp, mpi, sfxTrack, sfxStart, cut);
+                        if (!sfxItem) warnings.push('The sound effect could not be placed.');
+                        else {
+                            if (cut.fadeFailed) warnings.push(FADE_WARNING);
+                            const vol0 = (req.sfxVolume !== undefined && req.sfxVolume !== null) ? Number(req.sfxVolume) : (anim.sfxVolume != null ? Number(anim.sfxVolume) : 0);
+                            const vol = await levelVolume(sfxPath, vol0, cut.trimIn, cut.len, meta && meta.fps);      // peak window (sfx-level.js)
+                            await applyLevel(sfxItem, vol, 0);
+                            const sfxId = String(await sfxItem.GetUniqueId());
+                            state.lastPlacedAudioId = sfxId;
+                            const wantLink = req.linked !== false;
+                            try {
+                                let ok = false;
+                                if (typeof tl.SetClipsLinked === 'function') ok = await tl.SetClipsLinked([item, sfxItem], wantLink);
+                                if (!ok) ok = await bridgeCall('link_clips', { videoId: itemId, audioId: sfxId, linked: wantLink, volume: vol });
+                                clipsLinked = !!(wantLink && ok);
+                            } catch (e) { warnings.push('Could not link text and sound clips: ' + e.message); }
+                        }
                     }
                 }
             }
-        }
+        } catch (e) { warnings.push('Could not place the sound effect: ' + (e && e.message || e)); }
         // layered sounds: the ones from the preview stay; if the preview had none, they are placed now
         try {
             if (s.extraIds && s.extraIds.length) {

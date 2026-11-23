@@ -47,10 +47,13 @@ function defaultShadingElements() {
 function extractBraceBlock(raw, startIdx) {
     const openIdx = raw.indexOf('{', startIdx);
     if (openIdx < 0) return raw.slice(startIdx, startIdx + 2000);
-    let depth = 0;
+    // braces inside strings (a caption, a tool comment, an expression) do not count, as in blockEnd
+    let depth = 0, inStr = false;
     for (let i = openIdx; i < raw.length; i++) {
         const ch = raw[i];
-        if (ch === '{') depth++;
+        if (inStr) { if (ch === '\\') i++; else if (ch === '"') inStr = false; continue; }
+        if (ch === '"') inStr = true;
+        else if (ch === '{') depth++;
         else if (ch === '}') {
             depth--;
             if (depth === 0) return raw.slice(startIdx, i + 1);

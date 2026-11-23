@@ -412,7 +412,9 @@ async function directPlaceTitle(tl, project, track, start, want, kind, title, sn
     try {
         const mp = await project.GetMediaPool();
         const full = T.good < 3;
-        const before = full ? await cutSnapshot(tl, snap) : null;
+        // read from the timeline, not from `snap`: the snapshot already holds slots reserved for clips not placed yet
+        // (apply's main sound), which the "after" read cannot contain, so every check failed and turned this path off
+        const before = full ? await cutSnapshot(tl) : null;
         const placed = await mp.AppendToTimeline([{ mediaPoolItem: tpl, mediaType: 1, trackIndex: track, recordFrame: start, startFrame: 0, endFrame: want }]);
         item = placed && placed[0];
         let ok = !!item, why = 'no clip returned';

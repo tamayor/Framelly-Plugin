@@ -79,9 +79,14 @@ async function insertBoilerplate(event, id) {
                 if (!r || !r.ok) notes.push('The preset\'s effects could not be connected (' + ((r && r.why) || 'unknown') + ').');
             }
         } catch (e) { await undo(); throw e; }
-        const track = await pickTrack(tl, 'video', 0, start, start + want, 2, notes);
+        let track;
+        try { track = await pickTrack(tl, 'video', 0, start, start + want, 2, notes); } catch (e) { await undo(); throw e; }
         const mv = await moveTitleSafe(tl, item, track, start, tlEnd);
-        if (!mv.ok) return { error: mv.error };
+        if (!mv.ok) {
+            // left at the end of the timeline on its layer: taken out, so it does not lengthen the edit (no ripple: it is off V1)
+            if (mv.leftOnTrack) { try { await tl.DeleteClips([item], false); } catch (e) { /* ignore */ } }
+            return { error: mv.error };
+        }
         let compName = null;
         try { const names = (await item.GetFusionCompNameList()) || []; compName = names[names.length - 1] || null; } catch (e) { /* ignore */ }
         try { await bridgeCall('refresh', { item: id2, comp: compName }); } catch (e) { /* the clip is placed */ }

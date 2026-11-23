@@ -574,7 +574,8 @@ function checkToolArgs(name, args) {
 }
 
 function typeMismatch(v, spec) {
-    const types = [].concat(spec.type || []);
+    // null itself is never checked here (checkToolArgs skips it), so 'null' in a type list adds nothing to accept
+    const types = [].concat(spec.type || []).filter(t => t !== 'null');
     if (types.length) {
         // numbers and booleans sent as text ("3", "true"), and numbers where text is expected (ids, frames), are accepted:
         // the tools convert them, and clients do send them
@@ -582,7 +583,7 @@ function typeMismatch(v, spec) {
         const ok = types.some(t =>
             (t === 'integer' && Number.isInteger(num)) || (t === 'number' && Number.isFinite(num)) ||
             (t === 'string' && (typeof v === 'string' || Number.isFinite(v))) || (t === 'boolean' && (typeof v === 'boolean' || v === 'true' || v === 'false')) ||
-            (t === 'array' && Array.isArray(v)) || (t === 'object' && typeof v === 'object' && !Array.isArray(v)) || t === 'null');
+            (t === 'array' && Array.isArray(v)) || (t === 'object' && typeof v === 'object' && !Array.isArray(v)));
         if (!ok) return 'must be ' + types.join(' or ') + ' (got ' + (Array.isArray(v) ? 'array' : typeof v) + ')';
     }
     if (Array.isArray(spec.enum) && !spec.enum.includes(v)) return 'must be one of ' + spec.enum.join(', ');

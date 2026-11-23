@@ -192,7 +192,7 @@ async function syncLiveTransform(event, req) {
                 const project = await getProject();
                 const tl = project && await project.GetCurrentTimeline();
                 if (tl) {
-                    const hit = await findItemsByIds(tl, 'audio', [state.lastPlacedAudioId]);
+                    const hit = await findItemsByIds(tl, [state.lastPlacedAudioId], 'audio');
                     const ai = hit.get(String(state.lastPlacedAudioId));
                     if (ai) {
                         // peak window (sfx-level.js): the slider moves the level inside -20..-15 dBFS peak
