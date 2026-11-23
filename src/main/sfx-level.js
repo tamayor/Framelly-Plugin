@@ -35,9 +35,10 @@ function writeCacheSoon() {
     if (cacheTimer.unref) cacheTimer.unref();
 }
 
-let ffmpegPath;
+// Only a found ffmpeg is remembered: one installed while the plugin runs is found on the next sound.
+let ffmpegPath = null;
 function findFfmpeg() {
-    if (ffmpegPath !== undefined) return ffmpegPath;
+    if (ffmpegPath && fs.existsSync(ffmpegPath)) return ffmpegPath;
     ffmpegPath = null;
     for (const p of ['/opt/homebrew/bin/ffmpeg', '/usr/local/bin/ffmpeg', '/usr/bin/ffmpeg']) {
         try { if (fs.existsSync(p)) { ffmpegPath = p; break; } } catch (e) { /* next */ }
@@ -47,9 +48,14 @@ function findFfmpeg() {
 
 // The peak (dBFS, e.g. -3.2) of file from startSec for durSec seconds (durSec <= 0 = to the end); null when unknown.
 function measurePeak(file, startSec, durSec) {
+    return measure(file, startSec, durSec).then(r => r.peak);
+}
+// -> { peak, measured }: measured is false when there was no answer (no ffmpeg, a timeout, an error), so it is not
+// cached; a silent cut (-inf) is measured, with peak null.
+function measure(file, startSec, durSec) {
     return new Promise((resolve) => {
         const ff = findFfmpeg();
-        if (!ff || !file || !fs.existsSync(file)) return resolve(null);
+        if (!ff || !file || !fs.existsSync(file)) return resolve({ peak: null, measured: false });
         const args = ['-hide_banner', '-nostats'];
         if (startSec > 0) args.push('-ss', String(startSec));
         args.push('-i', file);
@@ -57,9 +63,10 @@ function measurePeak(file, startSec, durSec) {
         args.push('-af', 'volumedetect', '-vn', '-f', 'null', '-');
         execFile(ff, args, { timeout: 8000 }, (err, stdout, stderr) => {
             const m = /max_volume:\s*(-?[\d.]+|-inf)\s*dB/.exec(String(stderr || ''));
-            if (!m || m[1] === '-inf') return resolve(null);
+            if (!m) return resolve({ peak: null, measured: false });
+            if (m[1] === '-inf') return resolve({ peak: null, measured: !err });
             const v = Number(m[1]);
-            resolve(Number.isFinite(v) ? v : null);
+            resolve(Number.isFinite(v) ? { peak: v, measured: true } : { peak: null, measured: false });
         });
     });
 }
@@ -74,7 +81,8 @@ async function peakOf(file, trimIn, len, fps) {
     const key = file + '|' + st.size + '|' + Math.round(st.mtimeMs) + '|' + a + '|' + n + '|' + Math.round(f * 100);
     const c = readCache();
     if (Object.prototype.hasOwnProperty.call(c, key)) return c[key];
-    const v = await measurePeak(file, a / f, n / f);
+    const { peak: v, measured } = await measure(file, a / f, n / f);
+    if (!measured) return v;
     c[key] = v;
     const keys = Object.keys(c);
     if (keys.length > 3000) for (const k of keys.slice(0, keys.length - 3000)) delete c[k];

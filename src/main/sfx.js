@@ -45,7 +45,8 @@ function migrateSfxOriginals() {
         try {
             if (!fs.statSync(src).isFile()) continue;
             if (fs.existsSync(dst)) {
-                if (fs.statSync(dst).size === fs.statSync(src).size) fs.rmSync(src, { force: true });
+                // the same sound (by content: two sounds of one length and format have the same size) is a copy
+                if (fs.statSync(dst).size === fs.statSync(src).size && fs.readFileSync(dst).equals(fs.readFileSync(src))) fs.rmSync(src, { force: true });
                 continue;      // a different file with the same name is already an original: leave this one where it is
             }
             fs.renameSync(src, dst);
@@ -258,14 +259,8 @@ function copySfx(p) {
     const resolved = path.resolve(String(p));
     if (resolved.startsWith(SFX_ORIG_DIR + path.sep)) return path.relative(SFX_ORIG_DIR, resolved);
     if (resolved.startsWith(SFX_DIR + path.sep)) return path.relative(SFX_DIR, resolved);
-    const base = path.basename(p);
-    const existing = path.join(SFX_ORIG_DIR, base);
-    if (fs.existsSync(existing)) {
-        try {
-            if (fs.statSync(resolved).size === fs.statSync(existing).size) return base;
-        } catch (e) { /* ignore */ }
-    }
-    // Reuse an original with identical content
+    // Reuse an original with identical content (an original of the same name and size can still be another sound:
+    // uncompressed audio of one length and format always has the same size)
     try {
         const crypto = require('crypto');
         const buf = fs.readFileSync(resolved);
@@ -284,6 +279,7 @@ function copySfx(p) {
 // The panel draws the waveform itself; it gets bytes of library or dropped sound files.
 function readSfx(event, p) {
     const full = path.resolve(String(p));
+    if (!AUDIO_EXTS.includes(path.extname(full).toLowerCase())) throw new Error('Not a sound file: ' + full);
     if (!fs.existsSync(full)) throw new Error('Sound file not found: ' + full);
     return fs.readFileSync(full);
 }

@@ -74,7 +74,29 @@ function findNode() {
 }
 
 function readJson(file, fallback) { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch (e) { return fallback; } }
-function writeJson(file, v) { try { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, JSON.stringify(v, null, 2)); } catch (e) { dlog('BROLL-WRITE-FAIL', file, e.message); } }
+// Through a temporary file and a rename, so a crash mid-write never leaves half a file. -> false when it failed.
+function writeJson(file, v) {
+    const tmp = file + '.' + process.pid + '.tmp';
+    try {
+        fs.mkdirSync(path.dirname(file), { recursive: true });
+        fs.writeFileSync(tmp, JSON.stringify(v, null, 2));
+        fs.renameSync(tmp, file);
+        return true;
+    } catch (e) {
+        try { fs.rmSync(tmp, { force: true }); } catch (e2) { /* nothing written */ }
+        dlog('BROLL-WRITE-FAIL', file, e.message);
+        return false;
+    }
+}
+// broll-placed.json changed through `change(list)`, on the list as it is on disk now: an adjust or a placement that
+// awaited a render for minutes does not write back an old copy over records added or removed meanwhile.
+function updatePlaced(change) {
+    const all = readJson(PLACED_FILE, []);
+    const list = Array.isArray(all) ? all : [];
+    change(list);
+    return writeJson(PLACED_FILE, list.slice(-500));
+}
+const NOT_SAVED = 'the clip could not be recorded (broll-placed.json not written): it cannot be adjusted or finalized from here';
 function send(msg) {
     try { if (state.mainWindow && !state.mainWindow.isDestroyed()) state.mainWindow.webContents.send('broll:progress', msg); } catch (e) { /* panel gone */ }
 }
@@ -261,7 +283,14 @@ async function renderJob(job, onProgress, timeoutMs) {
     const id = job.id || crypto.randomBytes(5).toString('hex');
     const limit = Math.max(JOB_TIMEOUT_MS, Number(timeoutMs) || 0);
     return new Promise((resolve, reject) => {
-        const timer = setTimeout(() => { w.jobs.delete(id); reject(new Error('The render took over ' + Math.round(limit / 60000) + ' minutes')); armIdle(w); }, limit);
+        // The worker runs its jobs one after the other: a render that hangs would hold up every later one (whose own
+        // clocks are already running), so the worker is stopped and the next job starts a fresh one.
+        const timer = setTimeout(() => {
+            w.jobs.delete(id);
+            reject(new Error('The render took over ' + Math.round(limit / 60000) + ' minutes'));
+            if (worker === w) worker = null;
+            try { w.proc.kill(); } catch (e) { /* gone */ }
+        }, limit);
         w.jobs.set(id, { resolve, reject, onProgress, timer });
         w.proc.stdin.write(JSON.stringify({ ...job, id }) + '\n');
     });
@@ -269,6 +298,7 @@ async function renderJob(job, onProgress, timeoutMs) {
 
 function brollShutdown() {
     if (!worker) return;
+    clearTimeout(worker.idle);
     try { worker.proc.stdin.write(JSON.stringify({ op: 'quit' }) + '\n'); } catch (e) { /* gone */ }
     const p = worker.proc;
     setTimeout(() => { try { p.kill(); } catch (e) { /* gone */ } }, 3000);
@@ -277,10 +307,12 @@ function brollShutdown() {
 
 function brollStatus() { return current ? { ...current } : { phase: 'idle' }; }
 
-let cancelAsked = false;
+// Cancel: each place / adjust / batch takes the count when it starts and stops when it has gone up since, so a Cancel
+// pressed before the worker exists (reading the footage), or between two clips of a batch, is not lost.
+let cancelGen = 0;
 function brollCancel() {
+    cancelGen++;
     if (!worker) return false;
-    cancelAsked = true;
     const p = worker.proc;
     worker = null;
     try { p.kill(); } catch (e) { /* gone */ }
@@ -429,6 +461,13 @@ async function brollFrame() {
     return { frame: at, width: meta.width, height: meta.height, fps: meta.fps, subtitle: sub, img };
 }
 
+// A preview's status. Previews share the worker with placements, so one drawn while a clip renders or is placed does
+// not take over `current`: the placement's progress would go on as phase 'preview' / 'idle'.
+function previewStatus(msg, sendIt) {
+    if (!current || !['render', 'place'].includes(current.phase)) current = msg;
+    if (sendIt) send(msg);
+}
+
 async function brollPreview(event, o) {
     o = o || {};
     const reg = registry();
@@ -447,22 +486,21 @@ async function brollPreview(event, o) {
         try {
             const { tl, meta } = await currentTl();
             const ph = tcToFrame(await tl.GetCurrentTimecode(), meta);
-            current = { phase: 'preview', effect: e.id, text: 'Reading the footage for ' + e.name + '…' };
+            previewStatus({ phase: 'preview', effect: e.id, text: 'Reading the footage for ' + e.name + '…' }, false);
             shown = (await withFootage(e, props, ph, frames, meta, { still: ph })).props;
         } catch (err) { dlog('BROLL-FOOTAGE-PREVIEW', e.id, String(err.message || err)); }
     }
     const key = crypto.createHash('sha1').update(JSON.stringify([e.id, shown, w, h, fps, frames, at, scale])).digest('hex').slice(0, 14);
     const out = path.join(PREVIEW_DIR, e.id + '-' + key + '.png');
     if (!fs.existsSync(out)) {
-        current = { phase: 'preview', effect: e.id, text: 'Drawing a preview of ' + e.name + '…' };
-        send(current);
+        previewStatus({ phase: 'preview', effect: e.id, text: 'Drawing a preview of ' + e.name + '…' }, true);
         await renderJob({ op: 'still', effect: e.id, props: shown, width: w, height: h, fps, frames, frame: Math.round(frames * at), out, scale });
         // keep the preview folder small
         try {
             const files = fs.readdirSync(PREVIEW_DIR).map(f => ({ f, t: fs.statSync(path.join(PREVIEW_DIR, f)).mtimeMs })).sort((a, b) => b.t - a.t);
             for (const x of files.slice(80)) fs.unlinkSync(path.join(PREVIEW_DIR, x.f));
         } catch (err) { /* ignore */ }
-        current = { phase: 'idle' };
+        if (current && current.phase === 'preview') current = { phase: 'idle' };
         send({ phase: 'preview-done', effect: e.id });
     }
     const png = fs.readFileSync(out);
@@ -484,9 +522,12 @@ async function brollStrip(event, o) {
     const scale = Math.min(1, (Number(o.maxDim) || 560) / Math.max(w, h));
     const key = crypto.createHash('sha1').update(JSON.stringify([e.id, props, w, h, fps, frames, count, scale])).digest('hex').slice(0, 14);
     const dir = path.join(PREVIEW_DIR, 'strip-' + e.id + '-' + key);
-    if (!fs.existsSync(dir)) {
+    // the renderer makes the folder before it draws into <dir>.part: a strip that failed or was cancelled leaves it
+    // empty, and that is not a cached strip
+    const stripFrames = () => { try { return fs.readdirSync(dir).filter(f => /^f\d+\.png$/.test(f)); } catch (err) { return []; } };
+    if (!stripFrames().length) {
         while (stripJob) { try { await stripJob; } catch (err) { /* the next one tries */ } }
-        if (!fs.existsSync(dir)) {
+        if (!stripFrames().length) {
             stripJob = renderJob({ op: 'strip', effect: e.id, props, width: w, height: h, fps, frames, count, scale, out: dir });
             try { await stripJob; } finally { stripJob = null; }
             // keep the 12 newest strips
@@ -496,15 +537,18 @@ async function brollStrip(event, o) {
             } catch (err) { /* ignore */ }
         }
     }
-    const list = fs.readdirSync(dir).filter(f => /^f\d+\.png$/.test(f)).map(f => Number(f.slice(1, -4))).sort((a, b) => a - b);
+    const list = stripFrames().map(f => Number(f.slice(1, -4))).sort((a, b) => a - b);
     return { effect: e.id, width: w, height: h, total: frames,
         frames: list.map(f => ({ at: frames > 1 ? f / (frames - 1) : 0, url: 'data:image/png;base64,' + fs.readFileSync(path.join(dir, 'f' + f + '.png')).toString('base64') })) };
 }
 
 // ------------------------------------------------------------------ place
 
-async function brollPlace(event, o) {
+// gen: the Cancel count of the batch this belongs to (brollPlaceMany); left out, the count when this call starts.
+async function brollPlace(event, o, gen) {
     o = o || {};
+    const myGen = Number.isFinite(gen) ? gen : cancelGen;
+    const cancelled = () => cancelGen !== myGen;
     const reg = registry();
     const e = effectById(reg, o.effect);
     const props = mergedProps(reg, e, o.props, o.usePrefs !== false);
@@ -526,7 +570,6 @@ async function brollPlace(event, o) {
     const dir = await outDir(project);
     const uid = crypto.randomBytes(3).toString('hex');
     const out = fileFor(dir, e.id, uid, 1);
-    cancelAsked = false;
     const draft = !!o.draft;
     const scale = draft ? draftScale(meta.width, meta.height) : 1;
     const label = (draft ? 'draft ' : '') + e.name + (r.marks ? ' In → Out' : r.subtitle ? ' on #' + r.subtitle.index : '');
@@ -535,17 +578,20 @@ async function brollPlace(event, o) {
     const t0 = Date.now();
     let footNotes = [];
     try {
+        if (cancelled()) throw new Error('Cancelled');
         const foot = await withFootage(e, props, r.start, r.frames, meta);
         footNotes = foot.notes;
+        if (cancelled()) throw new Error('Cancelled');      // pressed while the footage was read (no worker to stop yet)
         current = { ...current, text: 'Rendering ' + label + '…' };
         await renderJob({ op: 'video', effect: e.id, props: foot.props, width: meta.width, height: meta.height, fps: meta.fps, frames: r.frames, out, scale },
             (p) => { current = { ...current, p }; send(current); });
+        if (cancelled()) { try { fs.rmSync(out, { force: true }); } catch (err) { /* left in the B-roll folder */ } throw new Error('Cancelled'); }
     } catch (err) {
-        current = { phase: 'error', effect: e.id, text: cancelAsked ? 'Cancelled' : String(err.message || err) };
+        current = { phase: 'error', effect: e.id, text: cancelled() ? 'Cancelled' : String(err.message || err) };
         send(current);
+        if (cancelled()) throw new Error('Cancelled');
         throw err;
     }
-    if (cancelAsked) throw new Error('Cancelled');
     saveLast(e.id, props);
     if (o.place === false) {
         current = { phase: 'done', effect: e.id, text: 'Rendered ' + path.basename(out) };
@@ -563,9 +609,7 @@ async function brollPlace(event, o) {
         width: meta.width, height: meta.height, file: out, version: 1, itemId: placed.itemId, track: placed.track,
         subtitle: r.subtitle, marks: r.marks || undefined, extend: extendF || undefined, draft: draft || undefined, created: new Date().toISOString()
     };
-    const all = readJson(PLACED_FILE, []);
-    all.push(rec);
-    writeJson(PLACED_FILE, all.slice(-500));
+    if (!updatePlaced(all => { all.push(rec); })) placed.notes.push(NOT_SAVED);
     const sec = ((Date.now() - t0) / 1000).toFixed(1);
     current = { phase: 'done', effect: e.id, id: uid, text: label + ' on ' + placed.track + ' (' + sec + ' s)' + (draft ? ' · half size: Finalize before export' : '') + (placed.notes.length ? ' · ' + placed.notes.join('; ') : '') };
     send({ ...current, placed: rec });
@@ -588,11 +632,11 @@ async function placeFile(project, tl, file, start, frames, wantedTrack, draft) {
 // Several in a row (the tab's "Place ticked", suggest_broll's result). One at a time, so Resolve stays responsive.
 async function brollPlaceMany(event, list) {
     const out = [];
+    const gen = cancelGen;
     for (const o of (Array.isArray(list) ? list : [])) {
-        if (cancelAsked) break;
-        try { out.push({ ok: true, ...(await brollPlace(event, o)) }); } catch (e) { out.push({ ok: false, effect: o.effect, subtitle: o.subtitle, error: String(e.message || e) }); }
+        if (cancelGen !== gen) break;
+        try { out.push({ ok: true, ...(await brollPlace(event, o, gen)) }); } catch (e) { out.push({ ok: false, effect: o.effect, subtitle: o.subtitle, error: String(e.message || e) }); }
     }
-    cancelAsked = false;
     return out;
 }
 
@@ -632,8 +676,11 @@ function adjustRange(rec, o, cur, sub, fps) {
     return { start, frames };
 }
 
-async function brollAdjust(event, o) {
+// gen: as for brollPlace (the batch's Cancel count: finalize, restyle, sync).
+async function brollAdjust(event, o, gen) {
     o = o || {};
+    const myGen = Number.isFinite(gen) ? gen : cancelGen;
+    const cancelled = () => cancelGen !== myGen;
     const reg = registry();
     const all = readJson(PLACED_FILE, []);
     const i = findRec(all, String(o.id || ''));
@@ -667,7 +714,6 @@ async function brollAdjust(event, o) {
     }
     const v = (rec.version || 1) + 1;
     const out = fileFor(path.dirname(rec.file), e.id, rec.id, v);
-    cancelAsked = false;
     // draft: true / false switches; left out, the clip stays as it is (Sync and edits keep a draft a draft)
     const draft = o.draft === undefined ? !!rec.draft : !!o.draft;
     const scale = draft ? draftScale(meta.width, meta.height) : 1;
@@ -677,17 +723,20 @@ async function brollAdjust(event, o) {
     const t0 = Date.now();
     let footNotes = [];
     try {
+        if (cancelled()) throw new Error('Cancelled');
         const foot = await withFootage(e, props, newStart, frames, meta);
         footNotes = foot.notes;
+        if (cancelled()) throw new Error('Cancelled');      // pressed while the footage was read (no worker to stop yet)
         current = { ...current, text: verb + e.name + '…' };
         await renderJob({ op: 'video', effect: e.id, props: foot.props, width: meta.width, height: meta.height, fps: meta.fps, frames, out, scale },
             (p) => { current = { ...current, p }; send(current); });
+        if (cancelled()) { try { fs.rmSync(out, { force: true }); } catch (err) { /* left in the B-roll folder */ } throw new Error('Cancelled'); }
     } catch (err) {
-        current = { phase: 'error', effect: e.id, text: cancelAsked ? 'Cancelled' : String(err.message || err) };
+        current = { phase: 'error', effect: e.id, text: cancelled() ? 'Cancelled' : String(err.message || err) };
         send(current);
+        if (cancelled()) throw new Error('Cancelled');
         throw err;
     }
-    if (cancelAsked) throw new Error('Cancelled');
     let how;
     const oldFile = rec.file, wasDraft = !!rec.draft;
     let oldMpi = null;
@@ -709,8 +758,9 @@ async function brollAdjust(event, o) {
         how = 'replaced with a new clip (' + (newStart !== Number(curStart) ? 'moved' : frames !== Number(curDur) ? 'new length' : 'new effect') + ')';
     }
     Object.assign(rec, { effect: e.id, name: e.name, props, file: out, version: v, frames, start: newStart, draft: draft || undefined, updated: new Date().toISOString() });
-    all[i] = rec;
-    writeJson(PLACED_FILE, all);
+    const notes = [...footNotes];
+    // the list as it is now (a placement or removal may have saved it during the render): only this record changes
+    if (!updatePlaced(list => { const k = list.findIndex(r => r.id === rec.id); if (k >= 0) list[k] = rec; else list.push(rec); })) notes.push(NOT_SAVED);
     saveLast(e.id, props);
     // A replaced draft is throwaway (live updates make one per change): drop its file, and its Media Pool item when
     // the clip went in as a new one. Full-size files are kept (undo / other timelines).
@@ -724,7 +774,7 @@ async function brollAdjust(event, o) {
     const what = rec.draft ? ' (draft)' : o.draft === false ? ' finalized at full size' : ' updated';
     current = { phase: 'done', effect: e.id, id: rec.id, text: e.name + what + ' (' + how + ', ' + sec + ' s)' };
     send({ ...current, placed: rec });
-    return { ...rec, how, seconds: Number(sec), notes: footNotes.length ? footNotes : undefined };
+    return { ...rec, how, seconds: Number(sec), notes: notes.length ? notes : undefined, landed: landed || undefined };
 }
 
 // Finalize: re-render drafts at full size and swap them in place. One id, or all: true for this timeline's drafts.
@@ -738,14 +788,13 @@ async function brollFinalize(event, o) {
         const on = mine.length ? new Set((await findItemsByIds(tl, mine.map(r => r.itemId), 'video')).keys()) : new Set();
         ids = mine.filter(r => on.has(r.itemId)).map(r => r.id);
     } else ids = [all[findRec(all, String(o.id || ''))].id];
-    cancelAsked = false;
+    const gen = cancelGen;
     const results = [];
     for (const id of ids) {
-        if (cancelAsked) break;
-        try { const r = await brollAdjust(event, { id, draft: false }); results.push({ id, ok: true, how: r.how, seconds: r.seconds }); }
+        if (cancelGen !== gen) break;
+        try { const r = await brollAdjust(event, { id, draft: false }, gen); results.push({ id, ok: true, how: r.how, seconds: r.seconds }); }
         catch (e) { results.push({ id, ok: false, error: String(e.message || e) }); }
     }
-    cancelAsked = false;
     return { finalized: results.filter(r => r.ok).length, results, note: ids.length ? undefined : 'No drafts on this timeline.' };
 }
 
@@ -757,14 +806,13 @@ async function brollRestyle(event, o) {
     const mine = readJson(PLACED_FILE, []).filter(r => r.timeline === name && r.itemId);
     const on = mine.length ? new Set((await findItemsByIds(tl, mine.map(r => r.itemId), 'video')).keys()) : new Set();
     const ids = mine.filter(r => on.has(r.itemId)).map(r => r.id);
-    cancelAsked = false;
+    const gen = cancelGen;
     const results = [];
     for (const id of ids) {
-        if (cancelAsked) break;
-        try { const r = await brollAdjust(event, { id, props: o.props }); results.push({ id, ok: true, how: r.how }); }
+        if (cancelGen !== gen) break;
+        try { const r = await brollAdjust(event, { id, props: o.props }, gen); results.push({ id, ok: true, how: r.how }); }
         catch (e) { results.push({ id, ok: false, error: String(e.message || e) }); }
     }
-    cancelAsked = false;
     return { restyled: results.filter(r => r.ok).length, results, note: ids.length ? undefined : 'No B-roll on this timeline.' };
 }
 
@@ -781,8 +829,7 @@ async function brollRemove(event, o) {
             if (it) removed = !!(await tl.DeleteClips([it], false));
         }
     } catch (e) { /* not on this timeline */ }
-    all.splice(i, 1);
-    writeJson(PLACED_FILE, all);
+    updatePlaced(list => { const k = list.findIndex(r => r.id === rec.id); if (k >= 0) list.splice(k, 1); });
     return { removed, id: rec.id, note: removed ? undefined : 'Forgotten; the clip was not on the open timeline.' };
 }
 
@@ -1029,7 +1076,9 @@ async function brollSync(event, o) {
     const all = readJson(PLACED_FILE, []);
     const recs = o.all ? all.filter(r => r.timeline === name && r.itemId) : [all[findRec(all, String(o.id || ''))]];
     const out = [];
+    const gen = cancelGen;
     for (const rec of recs) {
+        if (cancelGen !== gen) break;
         try {
             const it = (await findItemsByIds(tl, [rec.itemId], 'video')).get(rec.itemId);
             if (!it) { out.push({ id: rec.id, ok: false, error: 'not on the timeline' }); continue; }
@@ -1041,7 +1090,7 @@ async function brollSync(event, o) {
                 out.push({ id: rec.id, ok: true, unchanged: true, word: plan.word, source: plan.source });
                 continue;
             }
-            const r = await brollAdjust(event, { id: rec.id, props: { settle: plan.settle, ...(Number.isFinite(plan.delay) ? { delay: plan.delay } : {}), _times: plan.times || [], _ends: plan.ends || [], _manual: false }, startFrame: plan.start, frames: plan.end - plan.start });
+            const r = await brollAdjust(event, { id: rec.id, props: { settle: plan.settle, ...(Number.isFinite(plan.delay) ? { delay: plan.delay } : {}), _times: plan.times || [], _ends: plan.ends || [], _manual: false }, startFrame: plan.start, frames: plan.end - plan.start }, gen);
             out.push({ id: rec.id, ok: true, word: plan.word, source: plan.source, wordFrame: plan.wordFrame, moved: plan.start - start, how: r.how });
         } catch (e) { out.push({ id: rec.id, ok: false, error: String(e.message || e) }); }
     }

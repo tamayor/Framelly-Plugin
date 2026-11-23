@@ -136,11 +136,16 @@ function keepNewest(dirs, maxDirs, maxBytes) {
     let total = 0;
     return dirs.filter((d, i) => { total += d.bytes; return i === 0 || (i < maxDirs && total <= maxBytes); }).map(d => d.n);
 }
+// Folders a running footageProps call has made or reused are never removed: one render can need several (a backdrop
+// and a cut-out sequence), and a large sequence alone can pass KEEP_BYTES.
+const inUse = new Map();         // folder name -> footageProps calls using it
+function hold(dir) { const n = path.basename(dir); inUse.set(n, (inUse.get(n) || 0) + 1); return n; }
+function release(names) { for (const n of names) { const c = (inUse.get(n) || 0) - 1; if (c > 0) inUse.set(n, c); else inUse.delete(n); } }
 function prune() {
     try {
         const dirs = fs.readdirSync(CACHE_DIR).filter(n => n !== 'thumbs').map(n => ({ n, t: fs.statSync(path.join(CACHE_DIR, n)).mtimeMs })).sort((a, b) => b.t - a.t);
         for (const d of dirs) d.bytes = dirBytes(path.join(CACHE_DIR, d.n));
-        const keep = new Set(keepNewest(dirs, KEEP_DIRS, KEEP_BYTES));
+        const keep = new Set([...keepNewest(dirs, KEEP_DIRS, KEEP_BYTES), ...inUse.keys()]);
         for (const d of dirs) if (!keep.has(d.n)) fs.rmSync(path.join(CACHE_DIR, d.n), { recursive: true, force: true });
     } catch (e) { /* nothing cached yet */ }
 }
@@ -167,11 +172,12 @@ async function audioSamples(media, start, frames, audioTrack) {
 // The frames `list` (timeline frames) of the footage clip as cut-outs, full frames and / or clean plates in the cache
 // folder. The matte starts with the export and reads each frame as it lands (subject_matte.py `wait`).
 // -> { dir, count, cut, full, plate, w, h, box, headTop, cx } | { needInstall } | { error }
-async function footageFrames(seg, list, want, meta, progress) {
+async function footageFrames(seg, list, want, meta, progress, held) {
     const { bridgeCall } = require('./fusion-bridge');
     const SPOT = require('./spotlight');
     const key = sha([seg.itemId, seg.file, seg.srcStartFrame, seg.tlStart, list[0], list[list.length - 1], meta.width, meta.height]);
     const dir = path.join(CACHE_DIR, key), infoFile = path.join(dir, 'info.json');
+    if (held) held.push(hold(dir));
     const have = readJson(infoFile) || {};
     const needPlate = !!want.plate && !have.plate;
     const needCut = (!!want.cut && !have.cut) || needPlate, needFull = !!want.full && !have.full;
@@ -268,7 +274,7 @@ function backdropArgs(file, outPattern, meta, count, only) {
         '-q:v', '4', '-start_number', '0', outPattern];
 }
 // A video file as backdrop frames in the cache. -> { dir, count } | { error }
-async function backdropFrames(file, frames, meta, only, progress) {
+async function backdropFrames(file, frames, meta, only, progress, held) {
     const MEDIA = require('./media-analysis');
     const ff = MEDIA.ffmpegBin();
     if (!ff) return { error: 'ffmpeg was not found' };
@@ -277,6 +283,7 @@ async function backdropFrames(file, frames, meta, only, progress) {
     try { st = fs.statSync(file); } catch (e) { return { error: 'The backdrop video was not found: ' + file }; }
     const count = Number.isFinite(only) ? 1 : frames;
     const dir = path.join(CACHE_DIR, 'v' + sha([file, st.size, st.mtimeMs, frames, meta.fps, meta.width, meta.height, Number.isFinite(only) ? only : 'all']));
+    if (held) held.push(hold(dir));
     const have = readJson(path.join(dir, 'info.json'));
     if (have && have.count === count) { try { fs.utimesSync(dir, new Date(), new Date()); } catch (e) { /* only for prune */ } return { dir, count }; }
     fs.mkdirSync(dir, { recursive: true });
@@ -291,11 +298,12 @@ async function backdropFrames(file, frames, meta, only, progress) {
 }
 
 // A chosen picture with its background removed, cropped to the person. -> { image, box } | { needInstall } | { error }
-async function photoCutout(image) {
+async function photoCutout(image, held) {
     const SPOT = require('./spotlight');
     let st;
     try { st = fs.statSync(image); } catch (e) { return { error: 'The picture was not found: ' + image }; }
     const dir = path.join(CACHE_DIR, 'p' + sha([image, st.size, st.mtimeMs])), out = path.join(dir, 'crop.png');
+    if (held) held.push(hold(dir));
     const have = readJson(path.join(dir, 'info.json'));
     if (have && fs.existsSync(out)) return { image: out, box: have.box };
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'elsa-broll-'));
@@ -342,7 +350,10 @@ async function thumbs(count, progress) {
 // o.still: a preview frame (only the frame `o.still` is read, as a one-frame sequence); o.progress(text).
 // -> { extra, notes }. Throws when an effect that is nothing without the footage cannot get it.
 async function footageProps(effect, props, start, frames, meta, o) {
-    o = o || {};
+    const held = [];         // the cache folders this call uses: prune() leaves them while it runs
+    try { return await footagePropsFor(effect, props, start, frames, meta, o || {}, held); } finally { release(held); }
+}
+async function footagePropsFor(effect, props, start, frames, meta, o, held) {
     const need = needsFor(effect, props);
     const extra = {}, notes = [];
     if (!need) return { extra, notes };
@@ -363,14 +374,14 @@ async function footageProps(effect, props, start, frames, meta, o) {
         try { const t = await thumbs(need.thumbs, o.progress); if (t.length) extra._thumbs = t; } catch (e) { /* placeholders */ }
     }
     if (need.photo) {
-        const r = await photoCutout(String(props.image));
+        const r = await photoCutout(String(props.image), held);
         if (r.needInstall) notes.push('background not removed: ' + ENGINE_NOTE);
         else if (r.error) notes.push('background not removed: ' + r.error);
         else extra._image = r.image;
     }
     if (need.video) {
         // the backdrop is a video: its frames for the clip (one for a preview); the stage stands in when it fails
-        const r = await backdropFrames(props.image, frames, meta, still ? o.still - start : undefined, o.progress);
+        const r = await backdropFrames(props.image, frames, meta, still ? o.still - start : undefined, o.progress, held);
         if (r.error) notes.push(r.error + ': the lit stage is used');
         else extra._bg = { dir: r.dir, count: r.count };
     }
@@ -410,7 +421,7 @@ async function footageProps(effect, props, start, frames, meta, o) {
             const picks = [...new Set([a, Math.floor((a + b - 1) / 2), b - 1])];
             const outs = [];
             for (const f of picks) {
-                const r = await footageFrames(seg, [f], want, meta, o.progress);
+                const r = await footageFrames(seg, [f], want, meta, o.progress, held);
                 if (r.needInstall) return fail('outline not followed: ' + ENGINE_NOTE);
                 if (r.error) return fail(r.error);
                 const ol = await SPOT.venvJson('broll_cutout.py', { op: 'outline', dir: r.dir, picks: [0], points: OUTLINE_POINTS });
@@ -420,7 +431,7 @@ async function footageProps(effect, props, start, frames, meta, o) {
             else notes.push('no person found in the footage: the oval is used');
             return { extra, notes };
         }
-        const r = await footageFrames(seg, list, want, meta, o.progress);
+        const r = await footageFrames(seg, list, want, meta, o.progress, held);
         if (r.needInstall) return fail(ENGINE_NOTE);
         if (r.error) return fail(r.error);
         if (need.still) {

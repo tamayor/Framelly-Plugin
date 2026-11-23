@@ -29,8 +29,9 @@ const HOP = 0.01;                   // envelope step, seconds
 
 const BIN_DIRS = ['/opt/homebrew/bin', '/usr/local/bin', '/usr/bin'];
 const binCache = {};
+// Only a found binary is remembered: one installed while the plugin runs (after "ffmpeg is not installed") is found.
 function findBin(name) {
-    if (binCache[name] !== undefined) return binCache[name];
+    if (binCache[name] && fs.existsSync(binCache[name])) return binCache[name];
     binCache[name] = null;
     for (const d of BIN_DIRS) {
         const p = path.join(d, name);
@@ -777,7 +778,9 @@ async function timelinePcm(pieces, from, to, fps) {
         const srcFps = p.srcFps || fps;
         const t0 = (p.srcStartFrame + (a - p.tlStart) * (fileDur / tlDur) * (srcFps / fps)) / srcFps;
         const r = await runFfmpeg(windowArgs(p.file, Math.max(0, t0), fileDur).concat(['-vn', '-map', '0:a:0', '-ac', '1', '-ar', String(TL_RATE)],
-            af.length ? ['-af', af.join(',')] : [], ['-f', 's16le', '-c:a', 'pcm_s16le', '-']), { raw: true });
+            af.length ? ['-af', af.join(',')] : [], ['-f', 's16le', '-c:a', 'pcm_s16le', '-']),
+            // 32 000 bytes a second: a piece over about 35 minutes would overflow the default 64 MB
+            { raw: true, maxBuffer: Math.max(64 * 1024 * 1024, Math.ceil(Math.max(tlDur, fileDur) * TL_RATE * 2) + 4 * 1024 * 1024) });
         const buf = Buffer.isBuffer(r.stdout) ? r.stdout : Buffer.alloc(0);
         const at = Math.round((a - from) / fps * TL_RATE) * 2;
         const want = Math.min(Math.round(tlDur * TL_RATE) * 2, pcm.length - at);

@@ -33,8 +33,16 @@ const PREVIEW_DIR = path.join(APP_DATA_DIR, 'collage-previews');
 // Stock-site API keys (Sources & API keys): on this computer only, never in the project folder (it may be shared).
 const SOURCES_FILE = path.join(APP_DATA_DIR, 'collage-sources.json');
 const SOURCE_SITES = { pexels: 'PEXELS_API_KEY', pixabay: 'PIXABAY_API_KEY' };
-// Pages the pane may open in the browser: a candidate's source page, the sites' API key pages.
-const OPEN_OK = /^https:\/\/(commons\.wikimedia\.org|(www\.)?pexels\.com|pixabay\.com|www\.google\.com\/search\?)/;
+// Pages the pane may open in the browser: a candidate's source page, the sites' API key pages, a Google search.
+// The host is compared whole (a prefix test let "https://pexels.com.example.net" through).
+const OPEN_HOSTS = new Set(['commons.wikimedia.org', 'pexels.com', 'www.pexels.com', 'pixabay.com']);
+function openOk(u) {
+    let url;
+    try { url = new URL(String(u)); } catch (e) { return false; }
+    if (url.protocol !== 'https:' || url.username || url.password || url.port) return false;
+    if (OPEN_HOSTS.has(url.hostname)) return true;
+    return url.hostname === 'www.google.com' && url.pathname === '/search' && !!url.search;
+}
 const OVERLAY_TYPES = ['date', 'label', 'title', 'callout', 'highlight'];
 // The sounds for each cue kind (collage-plan.js sfxCuesOf), matched by name in the SFX Originals Library (sounds/original),
 // first match first; copies of a kind take turns through its matches, so a run of cards does not repeat one whoosh.
@@ -49,11 +57,17 @@ const SFX_FALLBACK = { hit: 'whoosh', marker: 'click', pop: 'click', click: 'pop
 
 let busy = null;            // what the pane is doing: 'find' | 'words' | 'still' | 'render' | 'place' | 'auto'
 let cancelAsked = false;
+let rendering = false;     // a clip is on the render worker (Render, or Auto-fill with render): Cancel stops it
 let findProc = null;       // the source-images.mjs run (find / a clip download), killed by Cancel
 
 const broll = () => require('./broll');
 function readJson(file, fallback) { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch (e) { return fallback; } }
-function writeJson(file, v) { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, JSON.stringify(v, null, 1) + '\n'); }
+// through a temporary file and a rename: an interrupted write never leaves half a shots.json
+function writeJson(file, v) {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const tmp = file + '.' + process.pid + '.tmp';
+    try { fs.writeFileSync(tmp, JSON.stringify(v, null, 1) + '\n'); fs.renameSync(tmp, file); } catch (e) { try { fs.rmSync(tmp, { force: true }); } catch (e2) { /* nothing written */ } throw e; }
+}
 let lastProgress = null;  // the last progress message, for collage_auto { status: true }
 let autoJob = null;        // the Auto-fill run: { promise, result, error, startedAt }
 function send(msg) {
@@ -811,13 +825,15 @@ async function renderInner(p, o) {
             const inside = j.beats && j.beats.length ? ' (' + j.beats.length + ' beat' + (j.beats.length === 1 ? '' : 's') + (j.beats.length > 1 ? ', ' + j.beats[0] + '–' + j.beats[j.beats.length - 1] : ', ' + j.beats[0]) + ')' : '';
             const what = (j.role === 'captions' ? 'captions' : j.role === 'title' ? 'title' : 'B-roll') + ' clip ' + (i + 1) + ' of ' + jobs.length + inside;
             send({ phase: 'render', p: done / total, text: 'Rendering ' + what + '…' });
+            if (cancelAsked) throw new Error('Cancelled');
+            rendering = true;
             try {
                 await broll().renderJob({ op: 'video', effect: j.effect, props: j.props, width: W, height: H, fps: FPS, frames: j.frames, out: j.file },
                     (q) => send({ phase: 'render', p: (done + q * j.frames) / total, text: 'Rendering ' + what + ' ' + Math.round(q * 100) + '%' }),
                     j.frames * 400);
             } catch (e) {
                 throw new Error(cancelAsked ? 'Cancelled' : String(e.message || e));
-            }
+            } finally { rendering = false; }
             if (cancelAsked) throw new Error('Cancelled');
             done += j.frames;
         }
@@ -1000,7 +1016,7 @@ async function placeSfx(p, shots, notes) {
 async function collageOpen(event, o) {
     const { shell } = require('electron');
     if (o && o.url) {
-        if (!OPEN_OK.test(String(o.url))) throw new Error('Only Wikimedia Commons, Pexels and Pixabay pages open from here.');
+        if (!openOk(o.url)) throw new Error('Only Wikimedia Commons, Pexels and Pixabay pages open from here.');
         return shell.openExternal(String(o.url));
     }
     const p = await projectFor();
@@ -1012,7 +1028,8 @@ async function collageOpen(event, o) {
 function collageCancel() {
     cancelAsked = true;
     if (findProc) { try { findProc.kill(); } catch (e) { /* gone */ } }
-    if (busy === 'render' || busy === 'still') { try { broll().brollCancel(); } catch (e) { /* no worker */ } }
+    // Auto-fill renders under busy 'auto': `rendering` says a clip is on the worker then
+    if (busy === 'render' || busy === 'still' || rendering) { try { broll().brollCancel(); } catch (e) { /* no worker */ } }
     send({ phase: 'error', text: 'Cancelled' });
     return true;
 }

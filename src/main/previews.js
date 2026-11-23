@@ -48,9 +48,13 @@ async function capturePreview(animId, itemId, text, designKey, tempDir, opts) {
     }
     const fps = Math.round(meta.fps || 25);
     const targetCount = Math.round(fps * 3);
+    // A preset's saved preview is captured beside its folder and swapped in once frames came back: a capture that
+    // times out or is cancelled leaves the old frames (library.json still points at them). prunePreviews removes a
+    // stale "<id>__new" folder an interrupted run left behind.
     const dir = tempDir || path.join(PREV_DIR, animId);
-    fs.rmSync(dir, { recursive: true, force: true });
-    fs.mkdirSync(dir, { recursive: true });
+    const work = tempDir ? dir : dir + '__new';
+    fs.rmSync(work, { recursive: true, force: true });
+    fs.mkdirSync(work, { recursive: true });
     // Viewer previews are taken at the timeline's own resolution (1:1 with what Resolve renders); the small
     // background card renders stay light.
     const fullDim = Math.max(meta.width || 1920, meta.height || 1080);
@@ -58,15 +62,22 @@ async function capturePreview(animId, itemId, text, designKey, tempDir, opts) {
     // Previews never need full HD: the long side is capped at PREV_MAX_DIM (smaller files, quicker renders).
     const maxDim = (tempDir && /__sub$/.test(tempDir)) ? 400 : Math.max(480, Math.min(fullDim, want, PREV_MAX_DIM));
     const t0 = Date.now();
-    const res = await bridgeCall('capture', {
-        item: itemId, comp: opts.comp || null, count: targetCount, step: 1, maxDim, outDir: dir,
-        unique: true, hold: Number(opts.hold) || 1, matteBg: opts.matteBg || null, cancelPath: CANCEL_FLAG
-    }, 240000);
-    lastCaptureStats = { ms: Date.now() - t0, maxDim, unique: res && res.unique, matte: !!(res && res.matte), hold: Number(opts.hold) || 1 };
-    const count = (res && typeof res.count === 'number') ? res.count : ((res && res.frames) ? res.frames.length : 0);
-    if (!count) throw new Error('No frames came back');
-    if (res && res.frames && res.frames.length) {
-        res.frames.forEach((b64, i) => fs.writeFileSync(path.join(dir, 'p' + String(i).padStart(2, '0') + '.png'), Buffer.from(b64, 'base64')));
+    let res, count;
+    try {
+        res = await bridgeCall('capture', {
+            item: itemId, comp: opts.comp || null, count: targetCount, step: 1, maxDim, outDir: work,
+            unique: true, hold: Number(opts.hold) || 1, matteBg: opts.matteBg || null, cancelPath: CANCEL_FLAG
+        }, 240000);
+        lastCaptureStats = { ms: Date.now() - t0, maxDim, unique: res && res.unique, matte: !!(res && res.matte), hold: Number(opts.hold) || 1 };
+        count = (res && typeof res.count === 'number') ? res.count : ((res && res.frames) ? res.frames.length : 0);
+        if (!count) throw new Error('No frames came back');
+        if (res && res.frames && res.frames.length) {
+            res.frames.forEach((b64, i) => fs.writeFileSync(path.join(work, 'p' + String(i).padStart(2, '0') + '.png'), Buffer.from(b64, 'base64')));
+        }
+        if (work !== dir) { fs.rmSync(dir, { recursive: true, force: true }); fs.renameSync(work, dir); }
+    } catch (e) {
+        if (work !== dir) { try { fs.rmSync(work, { recursive: true, force: true }); } catch (e2) { /* prunePreviews */ } }
+        throw e;
     }
     // Resolve writes the PNGs uncompressed; they are shrunk losslessly in the background, same file names.
     setTimeout(() => { compressPngTree(dir).then(() => compressPngTree(PREV_CACHE_DIR)); }, 1500);
@@ -237,7 +248,7 @@ function prunePreviews() {
             const full = path.join(PREV_DIR, n);
             if (n === path.basename(PREV_CACHE_DIR)) continue;
             try { if (!fs.statSync(full).isDirectory()) continue; } catch (e) { continue; }
-            const m = /^(.*?)(__(?:use|sub|draft))$/.exec(n);
+            const m = /^(.*?)(__(?:use|sub|draft|new))$/.exec(n);
             const base = m ? m[1] : n;
             if (base && !ids.has(base)) { rm(full); continue; }          // preset deleted
             if (m && age(full) > tempAge) rm(full);                       // stale temporary render
@@ -385,7 +396,7 @@ async function makePreviewInner(event, animId, customText, design, designKey, te
         if (!matteBg && bg === 'white') {
             try { const r = await bridgeCall('preview_bg', { item: itemId, comp: compName, color: [1, 1, 1] }); if (!r || !r.ok) bg = 'black'; } catch (e) { bg = 'black'; }
         }
-        previewBgNext = matteBg ? bg : bg;
+        previewBgNext = bg;
         const spec = parseTextStyle(compPath, null).animSpec || {};
         const copts = { comp: compName, matteBg, meta, maxDim: opts && opts.maxDim, hold: spec.frameRepeatVar ? 1 : (spec.frameRepeat || 1) };
         if (temp) {
@@ -420,7 +431,7 @@ async function makePreviewInner(event, animId, customText, design, designKey, te
         if (!leftover && itemId) regDel(itemId);
         try { if (tl && origTC) await tl.SetCurrentTimecode(origTC); } catch (e) { /* ignore */ }
         state.applying = false;
-        if (leftover) console.error('Preview clip could not be removed from the timeline');
+        if (leftover) dlog('Preview clip could not be removed from the timeline', itemId);
     }
 }
 

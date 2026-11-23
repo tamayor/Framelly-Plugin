@@ -34,6 +34,7 @@ const PYTHONS = [
 ];
 
 let job = null;              // { word, proc, running, cancelled, progress, result, error, promise }
+let starting = null;         // the word of a run still preparing (Resolve, the output folder, Python) before `job` is set
 let pyFound = null;
 
 function readPrefs() { try { return { ...DEFAULTS, ...JSON.parse(fs.readFileSync(PREFS_FILE, 'utf8')) }; } catch (e) { return { ...DEFAULTS }; } }
@@ -81,13 +82,18 @@ async function matchCutRun(event, opts) {
 
 // Starts a run (the MCP tool waits on job.promise for a while, then polls matchCutStatus).
 async function matchCutStart(opts) {
+    if (starting !== null) throw new Error('A match cut for "' + starting + '" is already running');
     if (job && job.running) throw new Error('A match cut for "' + job.word + '" is already running');
     const o = { ...readPrefs(), ...(opts || {}) };
     const word = String(o.word || '').trim();
     if (!word) throw new Error('Type the word to match on');
     if (word.length > 60) throw new Error('Use one word or a short phrase');
     savePrefs({ ...o, word });
-
+    // taken before the first await, so a second start (double click, panel + MCP) cannot slip in while this prepares
+    starting = word;
+    try { return await startRun(o, word); } finally { starting = null; }
+}
+async function startRun(o, word) {
     const project = await getProject();
     if (!project) throw new Error('Open a project in Resolve');
     const tl = await project.GetCurrentTimeline();
