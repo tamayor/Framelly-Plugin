@@ -178,3 +178,18 @@ test('alignRows finds each row\'s own words in the speech, whatever order the ro
     const p3 = WF.planRows([{ key: 'a', text: 'no means' }, { key: 'b', text: 'no' }], rep, 30);
     assert.deepStrictEqual(p3.ranges.map(r => [r.key, r.start, r.end]), [['a', 0, 9], ['b', 12, 18]]);
 });
+
+test('a word out dragged onto the next word\'s in reads back where it was put (animtime, step)', () => {
+    const term = { a: 6, delay: 1, text: 'on spreadsheets now' };
+    const anim = { target: 'animtime', terms: [term] };
+    const segs = [{ s: 0, e: 6 }, { s: 6, e: 14 }, { s: 16, e: 20 }];
+    const plan = WF.planFromWordSegs(anim, segs, 25);
+    const back = WF.wordSegsFromInfo({ ...anim, fitted: true, keys: plan.keys }, [], 25).segs;
+    assert.deepEqual(back.map(g => [g.s, g.e]), segs.map(g => [g.s, g.e]));
+
+    const step = { target: 'step', pop: 6, units: [{ text: 'on', own: 0 }, { text: 'spreadsheets', own: 10 }, { text: 'now', own: 20 }] };
+    const ssegs = [{ s: 0, e: 8 }, { s: 8, e: 12 }, { s: 16, e: 22 }];
+    const splan = WF.planFromWordSegs(step, ssegs, 25);
+    const sback = WF.wordSegsFromInfo({ ...step, fitted: true, keys: splan.keys }, [], 25).segs;
+    assert.deepEqual(sback.map(g => [g.s, g.e]), ssegs.map(g => [g.s, g.e]));
+});

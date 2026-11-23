@@ -46,6 +46,7 @@ function setTimingView(v) {
     store.set('sa.timingView', tmState.view);
     applyTimingView();
     renderTiming();
+    tmAlignWordLane();
 }
 // Moves the card into the bottom dock (above the status message) or back to its place in the Use tab.
 function applyTimingView() {
@@ -194,6 +195,25 @@ function renderTiming() {
         : 'Heads snap to the playhead, the preset timing (dashed) and each other. Arrow keys: 1 frame (Shift: 5), Alt: move the whole range' +
           (i.ranges.length > 1 ? ', Up / Down: the other text.' : '.');
     if (tmState.wordLaneCtl) tmState.wordLaneCtl.paint();
+    tmAlignWordLane();
+}
+
+// The word lane maps frames 0..length over its own width, so it must span exactly the bar's track (.tm-area): in the
+// compact / docked views the bar shares its row with the readout and is narrower than the card, and in the full view
+// the track is inset from the card by the bar's and the area's margins. Measured, so every view and width lines up.
+function tmAlignWordLane() {
+    const ctl = tmState.wordLaneCtl, bar = $('timingBar');
+    if (!ctl || !bar) return;
+    const lane = ctl.el, area = bar.querySelector('.tm-area'), box = lane.parentElement;
+    if (!area || !box || lane.classList.contains('hidden')) return;
+    const a = area.getBoundingClientRect(), b = box.getBoundingClientRect();
+    if (!a.width || !b.width) return;
+    const cs = getComputedStyle(box);
+    const left = b.left + box.clientLeft + (parseFloat(cs.paddingLeft) || 0);
+    const right = b.left + box.clientLeft + box.clientWidth - (parseFloat(cs.paddingRight) || 0);
+    const ml = Math.round(a.left - left) + 'px', mr = Math.round(right - a.right) + 'px';
+    if (lane.style.marginLeft !== ml) lane.style.marginLeft = ml;
+    if (lane.style.marginRight !== mr) lane.style.marginRight = mr;
 }
 
 // MultiText: each row's words. With word timings they sit where they are said (the audio under the clip), so a row
@@ -426,11 +446,14 @@ function initAnimTiming() {
                 return { editable: !!w.editable, segs: w.segs };
             },
             laneEdit: tmWordLaneEdit,
+            ordered: true,
             laneReset: tmWordLaneReset,
             onDrag: (on) => { tmState.wordDragging = on; }
         });
         tmState.wordLaneCtl.el.classList.add('tm-word-lane');
         wlMount.replaceWith(tmState.wordLaneCtl.el);
+        // the panel or the readout beside the bar changing width moves the track: keep the lane on it
+        if (typeof ResizeObserver === 'function') new ResizeObserver(() => tmAlignWordLane()).observe(bar);
     }
     $('timingCompactBtn').addEventListener('click', () => setTimingView(tmView() === 'full' ? 'compact' : 'full'));
     $('timingDockBtn').addEventListener('click', () => setTimingView('docked'));
@@ -506,7 +529,7 @@ async function tmLoadWordLane(force) {
         }
     } catch (e) { /* tried again on the next clip */ }
     tmState.wordLaneAsking = null;
-    if (tmState.wordLaneCtl) tmState.wordLaneCtl.paint();
+    if (tmState.wordLaneCtl) { tmState.wordLaneCtl.paint(); tmAlignWordLane(); }
     if (tmState.info && tmState.info.ranges) tmPaintRowWords();
 }
 async function tmSendWords(wake) {
@@ -526,6 +549,7 @@ async function tmSendWords(wake) {
             tmState.unfitAt = 0;
             renderTiming();
             tmRenderWords();
+            if (wake) tmLoadWordLane(true);          // read the words back from the keyed clip: the lane shows what it plays
         }
     } catch (e) { setStatus('Could not set the word timing: ' + e.message, 'bad'); }
 }
@@ -533,6 +557,9 @@ function tmWordLaneEdit(idx, s, e, final) {
     const i = tmState.info, w = tmState.wordLane;
     if (!i || !w || !w.segs || !w.segs[idx]) return;
     w.segs[idx] = { ...w.segs[idx], s, e };
+    // a word that pops into this one ends where this one comes in
+    const prev = w.segs[idx - 1];
+    if (prev && prev.fixedEnd) w.segs[idx - 1] = { ...prev, e: s };
     w.at = Date.now();
     i.fitted = true;
     tmState.unfitAt = 0;

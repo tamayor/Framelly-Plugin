@@ -488,14 +488,14 @@ function planFromWordSegs(info, segs, length) {
             }
             keys.push([s, vS]);
             if (j < tw.length - 1) {
+                // the out is always keyed: an out dragged onto (or past) the next word's in sits just before it, so
+                // it reads back where it was put instead of falling back to the even speed between the two ins
                 const nextS = clampTo(Number(list[j + 1].s) || 0, L);
-                if (e < nextS) {
-                    const endIdx = Math.min(tw[j + 1].at - 0.1, tw[j].at + tw[j].w.length);
-                    const vE = D * endIdx;
-                    if (vE > keys[keys.length - 1][1]) {
-                        keys.push([Math.max(keys[keys.length - 1][0] + minStep, e), vE]);
-                    }
-                }
+                const eAt = Math.min(e, nextS - minStep);
+                const endIdx = Math.min(tw[j + 1].at - 0.1, tw[j].at + tw[j].w.length);
+                const vE = D * endIdx;
+                const last = keys[keys.length - 1];
+                if (vE > last[1] && eAt > last[0]) keys.push([Math.max(last[0] + minStep, eAt), vE]);
             }
         }
         const lastV = D * (letters - 1);
@@ -535,8 +535,9 @@ function planFromWordSegs(info, segs, length) {
             const e = Number(list[k].e);
             if (pop > 0 && nextOwn - v > pop && Number.isFinite(e)) {
                 const nextF = k + 1 < units.length ? clampTo(Number(list[k + 1].s) || 0, L) : Infinity;
-                const ef = clampTo(e, L);
-                if (ef > f + minStep && ef < nextF - minStep) { keys.push([ef, v + pop]); endF = ef; }
+                // an out on (or past) the next unit's in lands just before it instead of being dropped
+                const ef = Math.min(clampTo(e, L), nextF - minStep);
+                if (ef > f + minStep) { keys.push([ef, v + pop]); endF = ef; }
             }
         }
         if (!keys.length) return null;

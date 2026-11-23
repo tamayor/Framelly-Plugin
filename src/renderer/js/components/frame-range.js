@@ -18,6 +18,7 @@
 //                       the block to move both (snaps to the playhead); double-click the lane = laneReset().
 //                       A seg with fixedEnd has no out of its own (its out handle moves the block).
 //   laneEdit(i, s, e, final)  a word block was changed (final on release); laneReset()
+//   ordered             words play in order: an in can't go before the previous word's out, an out past the next in
 //   title, onSlide(sliding)
 // Returns { el, paint }: call paint() when get() or last() changed from outside.
 const FRB_SNAP_PX = 10, FRB_HEAD_PX = 10;
@@ -104,13 +105,25 @@ function wordLane(opts) {
         let f = Math.round((x.clientX - b.left) / Math.max(1, b.width) * L);
         const a = at(), near = (q) => a !== null && Math.abs((q - a) / L * b.width) <= FRB_SNAP_PX;
         let s = d.s0, e = d.e0;
-        if (d.part === 's') { if (near(f)) f = a; s = Math.max(0, Math.min(d.e0 - 1, f)); }
-        else if (d.part === 'e') { if (near(f)) f = a; e = Math.max(d.s0 + 1, Math.min(L, f)); }
+        // opts.ordered: words play in order, so a word's in stays after the previous word's out (its in, when that one
+        // pops into this one) and its out before the next word's in. Without it the clip re-sorts them on release and
+        // the word lands somewhere other than where it was dropped.
+        const prev = opts.ordered ? laneSegs[d.i - 1] : null, next = opts.ordered ? laneSegs[d.i + 1] : null;
+        const lo = prev ? (prev.fixedEnd ? Math.round(prev.s) + 1 : Math.max(Math.round(prev.s) + 1, Math.round(prev.e))) : 0;
+        const hi = next ? Math.round(next.s) : L;
+        if (d.part === 's') { if (near(f)) f = a; s = Math.max(lo, Math.min(d.e0 - 1, f)); }
+        else if (d.part === 'm' && g.fixedEnd && opts.ordered) {
+            // a word that pops into the next one: its out is the next word's in, so the block moves its in only
+            s = d.s0 + (f - d.f0);
+            if (near(s)) s = a;
+            s = Math.max(lo, Math.min(hi - 1, s));
+        }
+        else if (d.part === 'e') { if (near(f)) f = a; e = Math.max(d.s0 + 1, Math.min(hi, f)); }
         else {
             const len = d.e0 - d.s0;
             s = d.s0 + (f - d.f0);
             if (near(s)) s = a; else if (near(s + len)) s = a - len;
-            s = Math.max(0, Math.min(L - len, s)); e = s + len;
+            s = Math.max(lo, Math.min(hi - len, s)); e = s + len;
         }
         if (s === g.s && e === g.e) return;
         g.s = s; g.e = e;
