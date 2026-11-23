@@ -92,6 +92,14 @@ function alignWords(tWords, spoken) {
 const clampTo = (v, len) => Math.max(0, Math.min(len, v));
 const r2 = (v) => Math.round(v * 100) / 100;
 
+// The clip frame a letter-by-letter reveal is fully in: the last word's spoken end, but at least a few frames after the
+// last word comes in (MIN_LAND, or the preset's own letter length when shorter) so a clipped word still animates.
+const MIN_LAND = 4;
+function landAt(lastIn, wordEnd, A, length, minStep) {
+    const floor = lastIn + Math.max(minStep, Math.min(A, MIN_LAND));
+    return Math.min(length, Math.max(floor, Number.isFinite(wordEnd) ? wordEnd : floor));
+}
+
 // Letter-by-letter presets -> { keys: [[clip frame, text frame], ...], start, end, matched, words } or null.
 // term: { a (one letter's animation), delay, text }. length: the clip's frames.
 function planAnimKeys(term, spoken, length, opts) {
@@ -114,21 +122,19 @@ function planAnimKeys(term, spoken, length, opts) {
         }
         keys.push([f, v]);
     }
-    // the last word's letters over its spoken length, then normal speed
+    // the last word's letters AND their own animation (A frames each: a blur or fade can be as long as the clip) are
+    // done when the last word is said, not A frames of normal speed later, which ended where the slider did
     const lastT = al.times[tw.length - 1];
+    const A = Math.max(0, Number(term.a) || 0);
     const lastV = D * (letters - 1);
     const prev = keys[keys.length - 1];
-    if (lastV > prev[1]) {
-        const say = Math.max(1, lastT.end - lastT.start);
-        keys.push([Math.min(length, Math.max(prev[0] + minStep, prev[0] + say)), lastV]);
-    }
+    const doneAt = landAt(prev[0], lastT.end - lead, A, length, minStep);
+    keys.push([doneAt, lastV + A]);
     const tail = keys[keys.length - 1];
     if (tail[0] < length) keys.push([length, tail[1] + (length - tail[0])]);
-    if (keys.length < 2) return null;
     const out = keys.map(k => [r2(k[0]), r2(k[1])]);
-    const natural = (Number(term.a) || 0) + lastV;
-    const endAt = Math.round(Math.min(length, tail[0] + (Number(term.a) || 0)));
-    return { keys: out, start: Math.round(out[0][0]), end: Math.max(Math.round(out[0][0]) + 1, endAt), natural,
+    const natural = A + lastV;
+    return { keys: out, start: Math.round(out[0][0]), end: Math.max(Math.round(out[0][0]) + 1, Math.round(doneAt)), natural,
         matched: al.matched, words: tw.length };
 }
 
@@ -383,8 +389,9 @@ function wordSegsFromInfo(info, spoken, length) {
                     editable: true,
                     segs: tw.map((w, j) => {
                         const s = clampS(frameAtKeys(info.keys, D * w.at));
-                        const endAt = j === tw.length - 1 ? letters - 1 : Math.min(letters - 1, w.at + w.w.length);
-                        const e = clampE(s, frameAtKeys(info.keys, D * endAt));
+                        // the last word's out = the reveal is fully in (its letters' own animation included)
+                        const ownEnd = j === tw.length - 1 ? D * (letters - 1) + (Number(term.a) || 0) : D * Math.min(letters - 1, w.at + w.w.length);
+                        const e = clampE(s, frameAtKeys(info.keys, ownEnd));
                         return { s, e, label: w.w };
                     })
                 };
@@ -498,19 +505,18 @@ function planFromWordSegs(info, segs, length) {
                 if (vE > last[1] && eAt > last[0]) keys.push([Math.max(last[0] + minStep, eAt), vE]);
             }
         }
+        // the last word's out: the whole reveal is in there (as planAnimKeys)
+        const A = Math.max(0, Number(term.a) || 0);
         const lastV = D * (letters - 1);
         const prev = keys[keys.length - 1];
-        if (lastV > prev[1]) {
-            const lastE = clampTo(Number(list[tw.length - 1].e) || (prev[0] + 1), L);
-            keys.push([Math.min(L, Math.max(prev[0] + minStep, lastE)), lastV]);
-        }
+        const lastE = clampTo(Number(list[tw.length - 1].e) || (prev[0] + 1), L);
+        const doneAt = Math.min(L, Math.max(prev[0] + minStep, lastE));
+        keys.push([doneAt, lastV + A]);
         const tail = keys[keys.length - 1];
         if (tail[0] < L) keys.push([L, tail[1] + (L - tail[0])]);
-        if (keys.length < 2) return null;
         const out = keys.map(k => [r2(k[0]), r2(k[1])]);
         const start = Math.round(out[0][0]);
-        const endAt = Math.round(Math.min(L, tail[0] + (Number(term.a) || 0)));
-        return { target, keys: out, start, end: Math.max(start + 1, endAt) };
+        return { target, keys: out, start, end: Math.max(start + 1, Math.round(doneAt)) };
     }
 
     if (target === 'step') {

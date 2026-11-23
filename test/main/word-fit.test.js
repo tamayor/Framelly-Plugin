@@ -193,3 +193,15 @@ test('a word out dragged onto the next word\'s in reads back where it was put (a
     const sback = WF.wordSegsFromInfo({ ...step, fitted: true, keys: splan.keys }, [], 25).segs;
     assert.deepEqual(sback.map(g => [g.s, g.e]), ssegs.map(g => [g.s, g.e]));
 });
+
+test('a long letter animation (Blur In Fade) is fully in when the last word is said, not at the slider end', () => {
+    const term = { a: 15, delay: 0.6, text: '30' };
+    const spoken = [{ w: 'where', start: -0.5, end: 2.5 }, { w: "I'm", start: 2.5, end: 5.5 }, { w: '30', start: 5.5, end: 11.5 }, { w: 'I', start: 11.5, end: 18 }];
+    const plan = WF.planAnimKeys(term, spoken, 16);
+    assert.equal(plan.start, 6);
+    assert.equal(plan.end, 12);
+    // own time reaches the full reveal (last letter + its own 15 frames) on the word's spoken end
+    assert.equal(WF.frameAtKeys(plan.keys, 0.6 + 15), 11.5);
+    const segs = WF.wordSegsFromInfo({ target: 'animtime', terms: [term], fitted: true, keys: plan.keys }, [], 16).segs;
+    assert.deepEqual(segs.map(g => [g.s, g.e]), [[6, 12]]);
+});
