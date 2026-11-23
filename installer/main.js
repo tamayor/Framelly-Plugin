@@ -92,7 +92,12 @@ function createWindow() {
     win.on('closed', () => { win = null; });
 }
 
-app.whenReady().then(() => {
+// One installer at a time: two would stage and copy into the same plugin folder and venvs at once.
+const gotLock = app.requestSingleInstanceLock();
+if (!gotLock) app.quit();
+else app.on('second-instance', () => { if (win && !win.isDestroyed()) { if (win.isMinimized()) win.restore(); win.focus(); } });
+
+if (gotLock) app.whenReady().then(() => {
     codeDir = locateCode();
     ipcMain.handle('state', () => state());
     ipcMain.handle('install', (e, ids) => install(Array.isArray(ids) ? ids.map(String) : []));

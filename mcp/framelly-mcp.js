@@ -59,7 +59,11 @@ function jobPromptTrimming() {
 
 function trimLimits(args) {
     const lim = Object.assign({}, TRIM_DEFAULTS, jobPromptTrimming());
-    for (const k of Object.keys(TRIM_DEFAULTS)) if (Number.isFinite(args && args[k])) lim[k] = args[k];
+    // numbers sent as text ("3") count too, as on the panel's tools
+    for (const k of Object.keys(TRIM_DEFAULTS)) {
+        const v = args && args[k];
+        if ((typeof v === 'number' || (typeof v === 'string' && v.trim() !== '')) && Number.isFinite(Number(v))) lim[k] = Number(v);
+    }
     lim.maxWords = Math.max(lim.maxWords, lim.minWords, 1);
     lim.maxChars = Math.max(lim.maxChars, lim.minChars, 1);
     return lim;
@@ -112,7 +116,7 @@ function chopPromptText(args) {
 }
 
 // The tools and their argument schemas live in src/main/tool-schemas.js (the plugin's HTTP server checks calls against them too).
-const { TOOLS } = require('../src/main/tool-schemas');
+const { TOOLS, checkToolArgs } = require('../src/main/tool-schemas');
 
 const LOCAL_TOOLS = {
     read_srt: readSrtTool, chop_srt: chopSrtTool,
@@ -300,6 +304,11 @@ function timeGroup(srcBlocks, phrases) {
     return out;
 }
 
+// The same file under another spelling (a case-insensitive volume, a symlink)?
+function sameFile(a, b) {
+    try { const sa = fs.statSync(a), sb = fs.statSync(b); return sa.dev === sb.dev && sa.ino === sb.ino; } catch (e) { return false; }
+}
+
 async function chopSrtTool(args) {
     const src = path.resolve(args.path);
     const blocks = parseSrt(fs.readFileSync(src, 'utf8'));
@@ -309,7 +318,10 @@ async function chopSrtTool(args) {
     let next = 1;
     for (const [gi, g] of groups.entries()) {
         const where = 'Group ' + (gi + 1);
-        if (!g.blocks.length || !g.phrases.length) throw new Error(where + ' needs blocks and phrases.');
+        if (!g || !Array.isArray(g.blocks) || !Array.isArray(g.phrases) || !g.blocks.length || !g.phrases.length) throw new Error(where + ' needs blocks and phrases.');
+        if (g.phrases.some(p => typeof p !== 'string')) throw new Error(where + ': every phrase must be text.');
+        // a group of blank phrases would drop its source blocks' subtitles from the file without a word
+        if (!g.phrases.some(p => p.trim())) throw new Error(where + ' has no text: give the phrases for blocks ' + g.blocks.join(', ') + '.');
         g.blocks.forEach((n, i) => {
             if (n !== next + i) throw new Error(where + ': expected block ' + (next + i) + ', got ' + n + '. Cover every block once, in order.');
         });
@@ -351,7 +363,7 @@ async function chopSrtTool(args) {
     if (args.media) snap = await snapChopCuts(out, args, warnings);
 
     const dest = args.outPath ? path.resolve(args.outPath) : path.join(path.dirname(src), path.basename(src, path.extname(src)) + ' chopped.srt');
-    if (dest === src && !args.overwrite) throw new Error('outPath is the source file. Pass overwrite: true to replace it, or choose another path.');
+    if ((dest === src || sameFile(dest, src)) && !args.overwrite) throw new Error('outPath is the source file. Pass overwrite: true to replace it, or choose another path.');
     fs.writeFileSync(dest, out.map(b => b.n + '\n' + msToSrtTime(b.startMs) + ' --> ' + msToSrtTime(b.endMs) + '\n' + b.text + '\n').join('\n'));
 
     return {
@@ -407,6 +419,8 @@ async function callPlugin(tool, args) {
             signal: AbortSignal.timeout(180000)
         });
     } catch (e) {
+        // The panel was reached but has not answered yet: it is still working, so a retry could do the work twice.
+        if (e && e.name === 'TimeoutError') throw new Error('The Framelly panel is still working on ' + tool + ' after 3 minutes. Check status / list_placed (or list the B-roll) before calling it again.');
         throw new Error('Could not reach the Framelly panel. Is it open in Resolve? (' + (e && e.message || e) + ')');
     }
     const body = await res.json().catch(() => null);
@@ -458,6 +472,9 @@ async function onMessage(msg) {
                 if (!TOOLS.some(t => t.name === name)) return fail(id, -32602, 'Unknown tool ' + name);
                 try {
                     const args = (params && params.arguments) || {};
+                    // the panel checks the tools it runs (automation.js); the local ones are checked here
+                    const bad = LOCAL_TOOLS[name] ? checkToolArgs(name, args) : null;
+                    if (bad) return reply(id, { content: [{ type: 'text', text: bad }], isError: true });
                     const result = LOCAL_TOOLS[name] ? await LOCAL_TOOLS[name](args) : await callPlugin(name, args);
                     return reply(id, { content: toContent(result) });
                 } catch (e) {
@@ -485,7 +502,12 @@ process.stdin.on('data', (chunk) => {
         let msg;
         try { msg = JSON.parse(line); } catch (e) { fail(null, -32700, 'Parse error'); continue; }
         const list = Array.isArray(msg) ? msg : [msg];
-        for (const m of list) msgChain = msgChain.then(() => onMessage(m));
+        // Tool calls run one after another; everything else (ping, tools/list, ...) is answered at once, also while a
+        // long tool call is running.
+        for (const m of list) {
+            if (m && m.method === 'tools/call') msgChain = msgChain.then(() => onMessage(m));
+            else onMessage(m);
+        }
     }
 });
 process.stdin.on('end', () => process.exit(0));

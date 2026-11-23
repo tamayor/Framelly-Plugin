@@ -18,7 +18,23 @@ const { clearDesignCache, copyPreset } = require('./fusion-setting');
 const { libForUI, loadLib, saveLib, uniqueName } = require('./library');
 const { exportSelectedClip, makePreview } = require('./previews');
 const { getProject } = require('./resolve');
-const { copySfx, sfxFilePath } = require('./sfx');
+const { copySfx, isEditedSfxName, sfxFilePath } = require('./sfx');
+
+// Deletes the preset's edited sound clip (sounds/current/) when it has one that no other preset uses: variants share
+// their source's clip. (Same rule as library-actions.js dropEditedClip.)
+function dropEditedClip(lib, a) {
+    const f = a.sfx;
+    if (!f || !a.sfxOrig || f === a.sfxOrig || !isEditedSfxName(f)) return;
+    const used = lib.animations.some(o => o !== a && o.id !== a.id && (o.sfx === f || o.sfxOrig === f ||
+        (Array.isArray(o.sfxLayers) && o.sfxLayers.some(l => l && (l.file === f || l.orig === f)))));
+    const full = path.resolve(SFX_DIR, f);
+    if (used || !full.startsWith(SFX_DIR + path.sep)) return;
+    try { fs.rmSync(full, { force: true }); } catch (e) { /* ignore */ }
+}
+function dropPreviews(id) {
+    if (typeof id !== 'string' || !id || id !== path.basename(id) || id === '.' || id === '..') return;
+    fs.rmSync(path.join(PREV_DIR, id), { recursive: true, force: true });
+}
 
 function resolveSettingPath(p) {
     if (!p) return null;
@@ -65,11 +81,17 @@ function resolveAudioPath(p) {
 }
 
 async function overwriteSettingFromTimeline(event, animId) {
+    const before = loadLib().animations.find(x => x.id === animId);
+    if (!before) return { error: 'Animation not found' };
+
+    const ex = await exportSelectedClip(before.name || 'animation');
+    // Read the library after Resolve answered: a save made while waiting (a slider, tags, a preview) is kept.
     const lib = loadLib();
     const a = lib.animations.find(x => x.id === animId);
-    if (!a) return { error: 'Animation not found' };
-
-    const ex = await exportSelectedClip(a.name || 'animation');
+    if (!a) {
+        try { fs.rmSync(path.join(ANIM_DIR, ex.file), { force: true }); } catch (e) {}
+        return { error: 'Animation not found' };
+    }
     const targetFile = a.file || ex.file;
     const origFile = a.fileOrig || targetFile;
 
@@ -115,7 +137,7 @@ async function overwriteSettingFromTimeline(event, animId) {
     copyFontsForSetting(path.join(ANIM_DIR, a.file), a.textDesign).catch(() => {});
 
     try {
-        fs.rmSync(path.join(PREV_DIR, a.id), { recursive: true, force: true });
+        dropPreviews(a.id);
         a.preview = null;
     } catch (e) {}
     try { await makePreview(null, a.id); } catch (e) {}
@@ -153,7 +175,7 @@ async function overwriteSettingFromFile(event, animId, srcPath) {
     saveLib(lib);
     copyFontsForSetting(path.join(ANIM_DIR, a.file), a.textDesign).catch(() => {});
     try {
-        fs.rmSync(path.join(PREV_DIR, a.id), { recursive: true, force: true });
+        dropPreviews(a.id);
         a.preview = null;
     } catch (e) {}
     try { await makePreview(null, a.id); } catch (e) {}
@@ -203,9 +225,7 @@ function revertAnimationAudio(event, id) {
     const a = lib.animations.find(x => x.id === id);
     if (!a) return { error: 'Animation not found' };
 
-    if (a.sfx && a.sfxOrig && a.sfx !== a.sfxOrig) {
-        try { fs.rmSync(path.join(SFX_DIR, a.sfx), { force: true }); } catch (e) {}
-    }
+    dropEditedClip(lib, a);
 
     a.sfx = a.sfxOrig || null;
     a.sfxTrimIn = 0;
@@ -219,9 +239,7 @@ function revertAnimationAudio(event, id) {
 }
 
 async function overwriteAudioFromTimeline(event, animId) {
-    const lib = loadLib();
-    const a = lib.animations.find(x => x.id === animId);
-    if (!a) return { error: 'Animation not found' };
+    if (!loadLib().animations.some(x => x.id === animId)) return { error: 'Animation not found' };
 
     const project = await getProject();
     const tl = project && await project.GetCurrentTimeline();
@@ -255,9 +273,11 @@ async function overwriteAudioFromTimeline(event, animId) {
 
     if (!audioPath) return { error: 'Select an audio clip on your timeline first' };
 
-    if (a.sfx && a.sfxOrig && a.sfx !== a.sfxOrig) {
-        try { fs.rmSync(path.join(SFX_DIR, a.sfx), { force: true }); } catch (e) {}
-    }
+    // Read the library after Resolve answered: a save made while waiting is kept.
+    const lib = loadLib();
+    const a = lib.animations.find(x => x.id === animId);
+    if (!a) return { error: 'Animation not found' };
+    dropEditedClip(lib, a);
 
     const file = copySfx(audioPath);
     a.sfxOrig = file;
@@ -278,9 +298,7 @@ function overwriteAudioFromFile(event, animId, srcPath) {
     const a = lib.animations.find(x => x.id === animId);
     if (!a) return { error: 'Animation not found' };
 
-    if (a.sfx && a.sfxOrig && a.sfx !== a.sfxOrig) {
-        try { fs.rmSync(path.join(SFX_DIR, a.sfx), { force: true }); } catch (e) {}
-    }
+    dropEditedClip(lib, a);
 
     const file = copySfx(p);
     a.sfxOrig = file;

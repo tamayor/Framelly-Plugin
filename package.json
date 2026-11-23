@@ -8,7 +8,7 @@
         "node": ">=22"
     },
     "scripts": {
-        "start": "electron .",
+        "start": "node -e \"console.log('The panel is started by DaVinci Resolve: npm run install-panel, then Workspace > Workflow Integrations > Framelly.')\"",
         "install-panel": "node installer/install-panel.js",
         "lint": "eslint .",
         "lint:py": "python3 -m pyflakes src/python tools test/python",

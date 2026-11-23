@@ -523,6 +523,15 @@ async function fxClipsWith(effectId) {
         return new Set(((g && g.clips) || []).filter(c => c.effects && c.effects[effectId]).map(c => String(c.id)));
     } catch (e) { return new Set(); }
 }
+// The timeline lock for the effect sounds. The callers checked state.applying before their bridge call; a placement
+// or preview update may have started during it, so it is checked again here (waiting a moment for it), and taken
+// only when free: the finally below then clears a lock this call holds, not one another operation holds.
+const BUSY_NOTE = 'Resolve stayed busy: the effect\'s sounds were not updated (change the effect again to retry)';
+async function takeTimeline(state) {
+    if (state.applying && !(await require('./live-preview').waitIdle(6000))) return false;
+    state.applying = true;
+    return true;
+}
 async function syncEffectSfx(effectId, clips, before, params) {
     const state = require('./state');
     const { getProject, timelineMeta } = require('./resolve');
@@ -536,7 +545,7 @@ async function syncEffectSfx(effectId, clips, before, params) {
     const removed = clips.filter(c => !(c.effects && c.effects[effectId]) && mine[String(c.id)]);
     let placed = 0, deleted = 0;
     const warnings = [], ids = [];
-    state.applying = true;
+    if (!(await takeTimeline(state))) return { placed, deleted, warnings: [BUSY_NOTE], ids };
     try {
         for (const c of removed) {
             const ids = mine[String(c.id)] || [];
@@ -637,7 +646,7 @@ async function resyncEffectSfx(effectId) {
     if (!tl) return null;
     const warnings = [];
     let placed = 0;
-    state.applying = true;
+    if (!(await takeTimeline(state))) return { placed, clips: sel.length, warnings: [BUSY_NOTE] };
     try {
         const meta = await timelineMeta(tl, project);
         for (const id of sel) {
@@ -668,7 +677,7 @@ async function toggleEffectSfx(effectId, on) {
     const spec = on ? effectSfxSpec(effectId) : null;
     const warnings = [];
     let placed = 0, deleted = 0;
-    state.applying = true;
+    if (!(await takeTimeline(state))) return { placed, deleted, warnings: [BUSY_NOTE] };
     try {
         const meta = on && spec ? await timelineMeta(tl, project) : null;
         for (const id of sel) {

@@ -100,6 +100,8 @@ function checkResolveAlive(force) {
         if (isPidAlive(resolvePid)) { pgrepMisses = 0; return; }
         resolvePid = 0;                                 // gone (or restarted): confirm with pgrep below
     }
+    // pgrep is a macOS / Linux tool: on Windows the parent-process check above and Resolve's quit callback close the panel.
+    if (process.platform === 'win32') return;
     execFile('pgrep', ['-x', 'Resolve'], (err, stdout) => {
         if (state.isQuitting) return;
         const pid = parseInt(String(stdout || '').trim().split(/\s+/)[0], 10);
@@ -112,7 +114,8 @@ function checkResolveAlive(force) {
         // ffmpeg and Python helpers a timeline preview spawns): only "no match" (exit 1), twice in a row, means gone.
         // A failed check used to quit the panel right after Start.
         const noMatch = err && err.code === 1;
-        if (!noMatch) { quitTrace('pgrep-error', { code: err && err.code }, false); lastPgrep = 0; return; }
+        // pgrep missing (ENOENT) cannot be retried into working: wait for the normal interval, not the next tick
+        if (!noMatch) { quitTrace('pgrep-error', { code: err && err.code }, false); if (!(err && err.code === 'ENOENT')) lastPgrep = 0; return; }
         if (!state.hasSeenResolve) return;
         if (++pgrepMisses < 2) { lastPgrep = 0; return; }   // re-checked on the next 1.5 s tick
         quitTrace('resolve-gone', { via: 'pgrep' });

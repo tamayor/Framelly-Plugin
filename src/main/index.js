@@ -36,7 +36,9 @@ app.on('before-quit', (e) => {
 });
 
 app.whenReady().then(() => {
-    ensureDirs();
+    // A data folder that cannot be made (its drive not connected) must not stop the window from opening: the panel
+    // then shows the library error itself instead of nothing at all.
+    try { ensureDirs(); } catch (e) { dlog('[startup] data folder not ready', String(e && e.message || e)); }
     registerIpcHandlers();
     createWindow();
     try { startAutomation(); } catch (e) { dlog('[automation] not started', String(e && e.message || e)); }      // for the MCP script (mcp/)

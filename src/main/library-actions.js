@@ -12,7 +12,7 @@ const fs = require('fs');
 const { dialog } = require('electron');
 
 const state = require('./state');
-const { ANIM_DIR, ANIM_ORIG_DIR, DRAFT_DIR, PREV_DIR, SFX_DIR, ensureDirs } = require('./config');
+const { ANIM_DIR, ANIM_ORIG_DIR, DRAFT_DIR, PREV_DIR, SFX_DIR, SFX_ORIG_DIR, ensureDirs } = require('./config');
 const { copyFontsForSetting } = require('./fonts');
 const { clearDesignCache, copyPreset, detectNodes, expandToolsInFile } = require('./fusion-setting');
 const { libForUI, loadLib, newAnimation, saveLib, uniqueName } = require('./library');
@@ -20,6 +20,29 @@ const { capturePreview, exportSelectedClip, makePreview } = require('./previews'
 const { presetTitleNames, syncTemplates } = require('./title-templates');
 const { findSelectedFusionItem } = require('./selection');
 const { copySfx, isEditedSfxName } = require('./sfx');
+
+// A stored name joined into a delete path (preset ids, file and sound names come from the panel and from library.json):
+// the full path when it stays inside dir, else null.
+function inside(dir, name) {
+    if (typeof name !== 'string' || !name) return null;
+    const full = path.resolve(dir, name);
+    return full.startsWith(dir + path.sep) ? full : null;
+}
+function prevDirOf(id) {
+    return (typeof id === 'string' && id && id === path.basename(id) && id !== '.' && id !== '..') ? path.join(PREV_DIR, id) : null;
+}
+// Is the sound file name used by a preset other than `a` (its sound, original or one of its sound layers)?
+function sfxUsedByOther(lib, a, file) {
+    return lib.animations.some(o => o !== a && o.id !== a.id && (o.sfx === file || o.sfxOrig === file ||
+        (Array.isArray(o.sfxLayers) && o.sfxLayers.some(l => l && (l.file === file || l.orig === file)))));
+}
+// Deletes the preset's edited sound clip (sounds/current/) when it has one that no other preset uses: variants share
+// their source's clip.
+function dropEditedClip(lib, a) {
+    if (!a.sfx || !a.sfxOrig || a.sfx === a.sfxOrig || !isEditedSfxName(a.sfx) || sfxUsedByOther(lib, a, a.sfx)) return;
+    const p = inside(SFX_DIR, a.sfx);
+    if (p) { try { fs.rmSync(p, { force: true }); } catch (e) { /* ignore */ } }
+}
 
 // "From timeline": takes the Text+ selected in Resolve RIGHT NOW (its animation file, its position/scale, and a looping
 // preview of how it looks), so the Create tab keeps it even when the selection in Resolve changes afterwards.
@@ -159,15 +182,17 @@ function saveAnimationVariant(event, req) {
     }
     let sfxOrigFile = src.sfxOrig || src.sfx || null;
     let sfxFile = src.sfx;
-    if (req.sfxPath) {
+    // The panel always sends the preset's sfxPath; only a sound from outside the library's sound folders is new. One
+    // already there keeps its original and its (edited) current sound apart.
+    const fromLibrary = (p) => { const r = path.resolve(String(p)); return r.startsWith(SFX_DIR + path.sep) || r.startsWith(SFX_ORIG_DIR + path.sep); };
+    if (req.sfxPath && !fromLibrary(req.sfxPath)) {
         try {
             sfxOrigFile = copySfx(req.sfxPath);
             sfxFile = sfxOrigFile;
         } catch (e) { /* ignore */ }
-    } else if (req.sfxOrig !== undefined) {
-        sfxOrigFile = req.sfxOrig;
-    } else if (req.sfx !== undefined) {
-        sfxFile = req.sfx;
+    } else {
+        if (req.sfxOrig !== undefined) sfxOrigFile = req.sfxOrig;
+        if (req.sfx !== undefined) sfxFile = req.sfx;
     }
     const newAnim = newAnimation(newName, newFile, {
         sfx: sfxFile,
@@ -264,29 +289,22 @@ function setUseOrder(event, ids) {
 
 function removeAnimation(event, id) {
     const lib = loadLib();
-    const titlesBefore = presetTitleNames(lib.animations);
     const a = lib.animations.find(x => x.id === id);
-    if (a) {
-        try { fs.unlinkSync(path.join(ANIM_DIR, a.file)); } catch (e) { /* ignore */ }
-        if (a.fileOrig) {
-            const otherUsesOrig = lib.animations.some(other => other.id !== a.id && (other.fileOrig === a.fileOrig || other.file === a.fileOrig));
-            if (!otherUsesOrig) {
-                try { fs.unlinkSync(path.join(ANIM_ORIG_DIR, a.fileOrig)); } catch (e) { /* ignore */ }
-            }
-        }
-        // When deleting a text preset, delete its edited sound clip in sounds/current/ too. The original stays in sounds/original/
-        // (the SFX Originals Library), where it can be removed on its own.
-        if (a.sfx && a.sfx !== a.sfxOrig && isEditedSfxName(a.sfx)) {
-            try {
-                const otherUses = lib.animations.some(other => other.id !== a.id && (other.sfx === a.sfx || other.sfxOrig === a.sfx));
-                const sfxPath = path.join(SFX_DIR, a.sfx);
-                if (!otherUses && fs.existsSync(sfxPath)) fs.rmSync(sfxPath, { force: true });
-            } catch (e) { /* ignore */ }
-        }
-    }
-    try { fs.rmSync(path.join(PREV_DIR, id), { recursive: true, force: true }); } catch (e) { /* ignore */ }
-    lib.animations = lib.animations.filter(x => x.id !== id);
+    if (!a) return { lib: libForUI() };
+    const titlesBefore = presetTitleNames(lib.animations);
+    const others = lib.animations.filter(x => x.id !== id);
+    // Its files go once the library no longer lists it, and only those no other preset uses.
+    const drop = [];
+    if (!others.some(o => o.file === a.file)) drop.push(inside(ANIM_DIR, a.file));
+    if (a.fileOrig && !others.some(o => o.fileOrig === a.fileOrig || o.file === a.fileOrig)) drop.push(inside(ANIM_ORIG_DIR, a.fileOrig));
+    // When deleting a text preset, delete its edited sound clip in sounds/current/ too. The original stays in sounds/original/
+    // (the SFX Originals Library), where it can be removed on its own.
+    if (a.sfx && a.sfx !== a.sfxOrig && isEditedSfxName(a.sfx) && !sfxUsedByOther(lib, a, a.sfx)) drop.push(inside(SFX_DIR, a.sfx));
+    lib.animations = others;
     saveLib(lib);
+    for (const p of drop) if (p) { try { fs.rmSync(p, { force: true }); } catch (e) { /* ignore */ } }
+    const prevDir = prevDirOf(a.id);
+    if (prevDir) { try { fs.rmSync(prevDir, { recursive: true, force: true }); } catch (e) { /* ignore */ } }
     syncTemplates(lib.animations, titlesBefore);      // its Resolve title template goes too (and a duplicate name's " 2" moves up)
     return { lib: libForUI() };
 }
@@ -312,12 +330,7 @@ function revertAnimation(event, id) {
     }
 
     // 2. Clean up any trimmed audio file attached to this preset that was not the original
-    if (a.sfx && a.sfxOrig && a.sfx !== a.sfxOrig) {
-        try {
-            const trimmedPath = path.join(SFX_DIR, a.sfx);
-            if (fs.existsSync(trimmedPath)) fs.rmSync(trimmedPath, { force: true });
-        } catch (e) { /* ignore */ }
-    }
+    dropEditedClip(lib, a);
 
     // 3. Restore metadata
     const snap = a.orig;
@@ -355,7 +368,8 @@ function revertAnimation(event, id) {
     syncTemplates(lib.animations, titlesBefore);      // a reverted name renames the Resolve title template back
 
     try {
-        fs.rmSync(path.join(PREV_DIR, a.id), { recursive: true, force: true });
+        const prevDir = prevDirOf(a.id);
+        if (prevDir) fs.rmSync(prevDir, { recursive: true, force: true });
         a.preview = null;
     } catch (e) { /* ignore */ }
 
@@ -375,9 +389,7 @@ function setAnimationSfx(event, id, p) {
     const lib = loadLib();
     const a = lib.animations.find(x => x.id === id);
     if (!a) return { error: 'Animation not found' };
-    if (a.sfx && a.sfxOrig && a.sfx !== a.sfxOrig) {
-        try { fs.rmSync(path.join(SFX_DIR, a.sfx), { force: true }); } catch (e) { /* ignore */ }
-    }
+    dropEditedClip(lib, a);
     if (!p) {
         a.sfx = null;
         a.sfxOrig = null;
@@ -421,7 +433,7 @@ function replaceAnimationFile(event, id, p, keep) {
     a.file = newFile;
     a.textDesign = null;   // the new file's own design takes over
     a.preview = null;
-    try { fs.rmSync(path.join(PREV_DIR, a.id), { recursive: true, force: true }); } catch (e) { /* ignore */ }
+    try { const prevDir = prevDirOf(a.id); if (prevDir) fs.rmSync(prevDir, { recursive: true, force: true }); } catch (e) { /* ignore */ }
     saveLib(lib);
     syncTemplates(lib.animations, titlesBefore);      // the old file's title template goes
     copyFontsForSetting(path.join(ANIM_DIR, a.file), null).catch(() => {});

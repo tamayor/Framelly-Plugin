@@ -15,7 +15,7 @@ const { bridgeCall } = require('./fusion-bridge');
 const { getFixes } = require('./fusion-fixes');
 const { dlog } = require('./log');
 const { settleLater } = require('./settle');
-const { designForFusion, fusionBoxes } = require('./fusion-setting');
+const { derived, designForFusion, fusionBoxes } = require('./fusion-setting');
 const { loadLib, saveLib } = require('./library');
 const {
     liveClearMarks, liveRemove, liveSetMarks, placeLiveSfx, regAdd, regCountOthers, regDel, sessionSounds, sweepTempClips, waitIdle
@@ -265,7 +265,11 @@ async function applyInner(req, warnings, sp) {
             anim.scale = scale;
             anim.rotation = rotation;
             anim.linked = wantLink;
-            saveLib(lib);
+            // a fresh copy is patched: `lib` was read before the snapshot and the insert, and saving it would undo
+            // library changes made meanwhile (a rename, a tag, a preset saved in the Create tab)
+            const fresh = loadLib();
+            const a2 = (fresh.animations || []).find(a => a.id === anim.id);
+            if (a2) { Object.assign(a2, { posX, posY, scale, rotation, linked: wantLink }); saveLib(fresh); }
         }
         if (posX !== 0 || posY !== 0 || scale !== 1 || rotation !== 0) {
             try {
@@ -426,7 +430,7 @@ async function applyInner(req, warnings, sp) {
         // 7. Glass Blur captions: the frosted glass is an ELSA Glass effect on the footage under the caption
         //    (fusion_bridge.glass_sync; a no-op for every other preset). A live preview gets it too (removed with
         //    the preview: live-preview.js liveRemove).
-        if (fs.existsSync(compPath) && /\bGlassFrost\b/.test(fs.readFileSync(compPath, 'utf8'))) {
+        if (derived(compPath, 'glassFrost', (t) => /\bGlassFrost\b/.test(t || ''))) {      // the shared preset-file cache, not a read per placement
             try {
                 require('./effect-presets').installEffects();
                 const g = await bridgeCall('glass_sync', { item: itemId, force: true }, 20000);

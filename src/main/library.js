@@ -135,13 +135,10 @@ function migrateAndCleanLib(lib) {
         }
     }
     if (changed) {
-        try {
-            const tmp = LIB_FILE + '.tmp';
-            fs.writeFileSync(tmp, JSON.stringify(lib, null, 2));
-            fs.renameSync(tmp, LIB_FILE);
-        } catch (e) { /* ignore */ }
+        try { writeFileDurable(LIB_FILE, JSON.stringify(lib, null, 2)); } catch (e) { /* ignore */ }
     }
-    // Clean up orphaned "name 2.mp3" duplicates of originals
+    // Clean up orphaned "name 2.mp3" duplicates of originals. Only a byte-identical copy goes: "Click 2.wav" can be a
+    // different sound that copySfx stored under a free name because "Click.wav" was taken.
     try {
         const inUse = new Set();
         if (lib.defaultSfx) inUse.add(lib.defaultSfx);
@@ -155,11 +152,34 @@ function migrateAndCleanLib(lib) {
             const ext = path.extname(file);
             const stem = path.basename(file, ext);
             const cleanStem = stem.replace(/(\s+\d+)+$/, '');
-            if (cleanStem !== stem && fs.existsSync(path.join(SFX_ORIG_DIR, cleanStem + ext))) {
+            if (cleanStem !== stem && sameFileContent(path.join(SFX_ORIG_DIR, file), path.join(SFX_ORIG_DIR, cleanStem + ext))) {
                 try { fs.rmSync(path.join(SFX_ORIG_DIR, file), { force: true }); } catch (e) { /* ignore */ }
             }
         }
     } catch (e) { /* ignore */ }
+}
+
+// True when both are files with the same bytes (false when either cannot be read).
+function sameFileContent(a, b) {
+    try {
+        const sa = fs.statSync(a), sb = fs.statSync(b);
+        if (!sa.isFile() || !sb.isFile() || sa.size !== sb.size) return false;
+        return fs.readFileSync(a).equals(fs.readFileSync(b));
+    } catch (e) { return false; }
+}
+
+// Writes the file through a temp file of this process, flushed to disk before it replaces the old one, so a power cut
+// or an ejected drive never leaves a half-written library.json (the data folder is often on an external volume).
+function writeFileDurable(file, text) {
+    const tmp = file + '.' + process.pid + '.tmp';
+    try {
+        const fd = fs.openSync(tmp, 'w');
+        try { fs.writeFileSync(fd, text); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+        fs.renameSync(tmp, file);
+    } catch (e) {
+        try { fs.rmSync(tmp, { force: true }); } catch (e2) { /* ignore */ }
+        throw e;
+    }
 }
 
 // The library file (hundreds of KB) is asked for by most actions. cache.js keeps its text and the parsed object by the
@@ -183,19 +203,37 @@ let dirsEnsured = false;
 function loadLib() {
     if (!dirsEnsured) { ensureDirs(); dirsEnsured = true; }
     let lib = { defaultSfx: null, alwaysOnTop: true, animations: [], tags: [] };
-    const raw = readLibRaw();
-    if (raw !== null) {
-        let parsed = readLibParsed();
-        if (!parsed) {
-            // Damaged file: keep it for inspection and fall back to the last good copy instead of starting empty.
-            try { fs.copyFileSync(LIB_FILE, LIB_FILE + '.corrupt-' + Date.now()); } catch (e) { /* ignore */ }
-            try { parsed = JSON.parse(fs.readFileSync(LIB_FILE + '.bak', 'utf8')); } catch (e) { parsed = null; }
-            if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-                try { fs.copyFileSync(LIB_FILE + '.bak', LIB_FILE); } catch (e) { /* ignore */ }
-            } else parsed = null;
+    let raw = readLibRaw();
+    if (raw === null) {
+        // Only a file that is not there is a new (empty) library. One that is there but cannot be read (permissions,
+        // a disk error) must not be shown as empty: the next save would replace it.
+        let missing = false;
+        try { fs.statSync(LIB_FILE); } catch (e) {
+            if (e && e.code === 'ENOENT') missing = true;
+            else throw new Error('Could not read the library (' + LIB_FILE + '): ' + (e && e.code || e));
         }
-        if (parsed) lib = Object.assign(lib, structuredClone(parsed));
+        if (!missing) {
+            raw = readLibRaw();
+            if (raw === null) throw new Error('Could not read the library (' + LIB_FILE + ')');
+        }
     }
+    let parsed = null;
+    if (raw !== null) {
+        parsed = readLibParsed();
+        if (!parsed) {
+            // Damaged file: keep it for inspection (once per version of it) and fall back to the last good copy instead
+            // of starting empty.
+            const key = fileVersion(LIB_FILE);
+            if (key === null || key !== quarantinedVersion) {
+                try { fs.copyFileSync(LIB_FILE, LIB_FILE + '.corrupt-' + Date.now()); quarantinedVersion = key; } catch (e) { /* ignore */ }
+            }
+            parsed = restoreFromBak();
+        }
+    } else {
+        // library.json is gone (moved, deleted, a sync tool): bring back the last good copy when there is one.
+        parsed = restoreFromBak();
+    }
+    if (parsed) lib = Object.assign(lib, structuredClone(parsed));
     if (!Array.isArray(lib.animations)) lib.animations = [];
     if (!Array.isArray(lib.tags)) lib.tags = [];
     if (!libMigratedOnce) {
@@ -207,6 +245,20 @@ function loadLib() {
     const capped = capRowTailsOnce(lib);
     if (seeded || linked || capped) { try { saveLib(lib); } catch (e) { /* seeded again next time */ } }
     return lib;
+}
+
+let quarantinedVersion = null;      // size:mtime of the damaged library.json already copied aside
+function fileVersion(file) {
+    try { const st = fs.statSync(file); return st.size + ':' + st.mtimeMs; } catch (e) { return null; }
+}
+
+// library.json.bak as an object, copied back over library.json; null when there is no usable backup.
+function restoreFromBak() {
+    let text = null, parsed = null;
+    try { text = fs.readFileSync(LIB_FILE + '.bak', 'utf8'); parsed = JSON.parse(text); } catch (e) { return null; }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+    try { writeFileDurable(LIB_FILE, text); } catch (e) { /* ignore */ }
+    return parsed;
 }
 
 // MultiText row presets were saved with a 12-frame tail ("Ends" after the caption). A MultiText clip now always ends
@@ -287,16 +339,16 @@ function stampUpdated(lib) {
 function saveLib(lib) {
     if (!dirsEnsured) { ensureDirs(); dirsEnsured = true; }
     stampUpdated(lib);
-    const tmp = LIB_FILE + '.tmp';
     const text = JSON.stringify(lib, null, 2);
-    fs.writeFileSync(tmp, text);
-    // Keep the previous good version (at most once a minute, so rapid edits stay cheap).
+    // Keep the previous good version (at most once a minute, so rapid edits stay cheap), itself written whole or not at
+    // all. A damaged library.json never replaces the backup.
     try {
         if (fs.existsSync(LIB_FILE) && (!fs.existsSync(LIB_FILE + '.bak') || Date.now() - fs.statSync(LIB_FILE + '.bak').mtimeMs > 60000)) {
-            fs.copyFileSync(LIB_FILE, LIB_FILE + '.bak');
+            const prev = readLibRaw();
+            if (prev !== null && readLibParsed()) writeFileDurable(LIB_FILE + '.bak', prev);
         }
     } catch (e) { /* ignore */ }
-    fs.renameSync(tmp, LIB_FILE);
+    writeFileDurable(LIB_FILE, text);
     // the next loadLib finds the file changed (stat) and would parse again: hand it what was just written instead
     try { libCache.prime(LIB_FILE, text, { parsed: structuredClone(lib) }); } catch (e) { libCache.invalidate(LIB_FILE); }
 }

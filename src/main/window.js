@@ -293,7 +293,8 @@ function createWindow() {
         minHeight: MIN_H,
         title: 'Framelly',
         backgroundColor: '#131614',
-        webPreferences: { preload: PRELOAD_FILE }
+        // Set explicitly: the panel runs on whatever Electron Resolve ships, and the preload relies on isolation.
+        webPreferences: { preload: PRELOAD_FILE, contextIsolation: true, nodeIntegration: false }
     }));
     state.mainWindow.setMenu(null);
     state.mainWindow.webContents.on('console-message', (event, level, message, line, sourceId) => {
@@ -335,6 +336,8 @@ function createWindow() {
     state.mainWindow.on('focus', () => { state.parkArmed = false; if (state.appIdle && !state.mainWindow.isMinimized()) setAppIdle(false); acOnFocus(); });
     state.mainWindow.on('closed', () => { stopAnim(); acStopPoll(); clearTimeout(ac.blurTimer); clearTimeout(ac.resizeTimer); });
     state.mainWindow.on('show', () => setAppIdle(state.mainWindow.isMinimized()));
-    applyOnTop(loadLib().alwaysOnTop !== false);   // stays above Resolve by default
+    let onTop = true;   // stays above Resolve by default
+    try { onTop = loadLib().alwaysOnTop !== false; } catch (e) { dlog('[window] library not read', String(e && e.message || e)); }
+    applyOnTop(onTop);
     state.mainWindow.loadFile(INDEX_HTML);
 }

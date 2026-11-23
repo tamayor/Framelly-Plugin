@@ -102,22 +102,40 @@ async function spotEngine() { return { ready: await engineReady(), sizeMB: 60 };
 
 function download(url, file, onPct, hops) {
     return new Promise((resolve, reject) => {
-        https.get(url, { headers: { 'User-Agent': 'framelly' } }, (res) => {
+        const tmp = file + '.part';
+        let out = null, done = false;
+        // a failed or stalled download leaves no .part file behind and never keeps the install waiting
+        const fail = (e) => {
+            if (done) return;
+            done = true;
+            try { if (out) out.destroy(); } catch (x) { /* ignore */ }
+            try { fs.rmSync(tmp, { force: true }); } catch (x) { /* ignore */ }
+            reject(e);
+        };
+        const req = https.get(url, { headers: { 'User-Agent': 'framelly' } }, (res) => {
             if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location && (hops || 0) < 6) {
                 res.resume();
+                done = true;
                 download(res.headers.location, file, onPct, (hops || 0) + 1).then(resolve, reject);
                 return;
             }
-            if (res.statusCode !== 200) { res.resume(); reject(new Error('HTTP ' + res.statusCode)); return; }
+            if (res.statusCode !== 200) { res.resume(); fail(new Error('HTTP ' + res.statusCode)); return; }
             const total = Number(res.headers['content-length']) || MODEL_BYTES;
             let got = 0;
-            const tmp = file + '.part';
-            const out = fs.createWriteStream(tmp);
+            out = fs.createWriteStream(tmp);
             res.on('data', (d) => { got += d.length; if (onPct) onPct(Math.round(got / total * 100)); });
+            res.on('error', fail);
+            res.on('aborted', () => fail(new Error('The download was interrupted')));
             res.pipe(out);
-            out.on('finish', () => out.close(() => { try { fs.renameSync(tmp, file); resolve(); } catch (e) { reject(e); } }));
-            out.on('error', reject);
-        }).on('error', reject);
+            out.on('finish', () => out.close(() => {
+                if (done) return;
+                done = true;
+                try { fs.renameSync(tmp, file); resolve(); } catch (e) { reject(e); }
+            }));
+            out.on('error', fail);
+        });
+        req.on('error', fail);
+        req.setTimeout(30000, () => req.destroy(new Error('The download stalled (no data for 30 s)')));
     });
 }
 

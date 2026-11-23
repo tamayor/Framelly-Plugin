@@ -33,7 +33,9 @@ function setAppVersion(event, newVer) {
         return { error: 'Invalid version string' };
     }
     const cleanVer = newVer.trim().replace(/^v/i, '').trim();
-    if (!cleanVer) return { error: 'Invalid version string' };
+    // It goes into manifest.xml (read by Resolve to load the plugin) and package.json: no markup, quotes or control
+    // characters, which would break the XML.
+    if (!cleanVer || cleanVer.length > 40 || /[<>&"'\\\u0000-\u001f\u007f]/.test(cleanVer)) return { error: 'Invalid version string' };
 
     const pkgPath = PACKAGE_JSON;
     try {
@@ -42,7 +44,7 @@ function setAppVersion(event, newVer) {
             pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
         }
         pkg.version = cleanVer;
-        fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 4) + '\n', 'utf8');
+        writeWhole(pkgPath, JSON.stringify(pkg, null, 4) + '\n');
     } catch (e) {
         return { error: 'Failed to update package.json: ' + (e.message || e) };
     }
@@ -52,8 +54,8 @@ function setAppVersion(event, newVer) {
         if (fs.existsSync(manifestPath)) {
             let xml = fs.readFileSync(manifestPath, 'utf8');
             if (/<Version>.*?<\/Version>/.test(xml)) {
-                xml = xml.replace(/<Version>.*?<\/Version>/, `<Version>${cleanVer}</Version>`);
-                fs.writeFileSync(manifestPath, xml, 'utf8');
+                xml = xml.replace(/<Version>.*?<\/Version>/, () => '<Version>' + cleanVer + '</Version>');
+                writeWhole(manifestPath, xml);
             }
         }
     } catch (e) {
@@ -61,4 +63,16 @@ function setAppVersion(event, newVer) {
     }
 
     return { ok: true, version: cleanVer };
+}
+
+// Through a temp file, so an interrupted write never leaves half a manifest.
+function writeWhole(file, text) {
+    const tmp = file + '.' + process.pid + '.tmp';
+    try {
+        fs.writeFileSync(tmp, text, 'utf8');
+        fs.renameSync(tmp, file);
+    } catch (e) {
+        try { fs.rmSync(tmp, { force: true }); } catch (e2) { /* ignore */ }
+        throw e;
+    }
 }
