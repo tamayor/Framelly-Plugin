@@ -110,7 +110,8 @@ export const SeriesTitle: React.FC<P> = (p) => {
                                 <div style={{ marginTop: 8, opacity: a, transform: `translateY(${(1 - a) * 18}px)` }}>
                                     <span style={{ position: 'relative', display: 'inline-block', padding: '2px 22px 8px' }}>
                                         <span style={{ position: 'absolute', inset: 0, background: accent, borderRadius: 10, transform: `skewX(-6deg) scaleX(${swipe})`, transformOrigin: 'left center' }} />
-                                        <span style={{ position: 'relative', fontFamily: sans, fontWeight: 800, fontSize: 60, letterSpacing: 0.5, textShadow: 'none',
+                                        {/* balanced lines (user, Ep. 17): a focus line that wraps splits evenly, never one word on the second line */}
+                                        <span style={{ position: 'relative', display: 'block', maxWidth: 800, textAlign: 'center', textWrap: 'balance' as any, fontFamily: sans, fontWeight: 800, fontSize: 60, letterSpacing: 0.5, textShadow: 'none',
                                             color: swipe > 0.5 ? readable(accent) : '#fff' }}>{focus}</span>
                                     </span>
                                 </div>

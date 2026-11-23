@@ -165,7 +165,7 @@ async function render(job, url, inputProps, t0) {
         }
         return { out: job.out, frames, total: D, ms: Date.now() - t0 };
     }
-    const opaque = job.opaque === true || job.effect === 'reason-scene' || job.effect === 'collage-track';
+    const opaque = job.opaque === true || ((job.effect === 'reason-scene' || job.effect === 'collage-track') && job.opaque !== false);   // opaque: false = keep the alpha (a split-screen thought: photos above, the speaker showing below)
     const tmp = job.out + (opaque ? '.part.mp4' : '.part.mov');
     try {
         await renderMedia({

@@ -2455,6 +2455,12 @@
           "default": false
         },
         {
+          "key": "gridCols",
+          "type": "number",
+          "label": "Grid: tiles per row (default 2)",
+          "default": 2
+        },
+        {
           "key": "margin",
           "type": "number",
           "label": "Margin",
@@ -3699,6 +3705,18 @@
           "type": "text",
           "label": "Picture focus per picture (CSS object-position, | separated)",
           "default": ""
+        },
+        {
+          "key": "photoCredits",
+          "type": "text",
+          "label": "Source name per picture, small at its lower left (| separated, blank = none)",
+          "default": ""
+        },
+        {
+          "key": "grid",
+          "type": "bool",
+          "label": "Photos as a 2-column grid, each tile lands and stays (matcha / strawberry blocks alternate)",
+          "default": false
         },
         {
           "key": "label",

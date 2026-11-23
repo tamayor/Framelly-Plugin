@@ -6,6 +6,7 @@
 // on twos. Used by reason-scene through its `illo` prop: [{ kind, x, y, s, at, ...}] in frame pixels (1080 x 1920).
 import React from 'react';
 import { kitScene, KitDefs, KitItem } from './RisoKit';
+import { floodScene } from './RisoFlood';
 
 const INK = '#1c2738', PAPER = '#efe4cc', MATCHA = '#3f7f45', STRAW = '#c7385a';
 const cl = (x: number) => Math.max(0, Math.min(1, x));
@@ -745,6 +746,8 @@ export const RisoIllo: React.FC<{ items: IlloItem[]; f: number }> = ({ items, f 
             if (it.out != null && f >= it.out) return null;
             const kit = kitScene(it as KitItem, f, i);   // Ep. 13+ scenes (RisoKit.tsx, the illustration standard)
             if (kit !== undefined) return kit;
+            const flood = floodScene(it as KitItem, f, i);   // Ep. 20 flood-wall scenes (RisoFlood.tsx)
+            if (flood !== undefined) return flood;
             switch (it.kind) {
                 case 'queue': return <Queue key={i} it={it} f={f} />;
                 case 'folders': return <Folders key={i} it={it} f={f} id="illo" />;

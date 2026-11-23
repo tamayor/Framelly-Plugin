@@ -472,6 +472,11 @@ export const ReasonScene: React.FC<P> = (p) => {
     // accent blocks only, which get the stronger soy-ink mottling), and every tag / label set straight with a flat offset block instead of a soft
     // shadow, a random tilt and a string. One motion for everything: a hard cut that settles on twos.
     const poster = pp.poster === true || String(pp.poster) === 'true';
+    // grid (Ep. 17, user: a 2x2 stack of photos "to show different evidences", shadows alternating matcha and strawberry):
+    // every photo gets its own straight tile, lands on its word and STAYS; no shared panel behind them.
+    const grid = pp.grid === true || String(pp.grid) === 'true';
+    // photoCredits (Ep. 17): one source name per photo, '|' between; blank = no credit. Drawn small at the photo's lower left.
+    const credits = String(pp.photoCredits || '').split('|').map((x) => x.trim());
     const blockCol = ({ straw: STRAW, matcha: MATCHA, ink: INK } as Record<string, string>)[String(pp.block || 'straw')] || STRAW;
     type Cutout = { img: string; src?: string; at: number; x: number; y: number; w?: number; rot?: number; label?: string; still?: boolean; pop?: boolean;
         fx?: number; fy?: number; fly?: number; spin?: number; outAt?: number; ox?: number; oy?: number; outFrames?: number };
@@ -522,15 +527,36 @@ export const ReasonScene: React.FC<P> = (p) => {
             <div style={{ position: 'absolute', left, top: stageY, width: stageW, height: stageH }}>
                 {/* frame: false = no film strip and no paper, the stage only places cut-outs / tags over the backdrop */}
                 {showFrame && !poster && <FilmBorder box={{ w: stageW, h: stageH }} seed={Number(p.number) || 3} shadow="0 24px 60px rgba(0,0,0,.55)" edgeColor={STRAW} />}
-                {showFrame && poster && <div style={{ position: 'absolute', left: 16, top: 14, width: stageW, height: stageH, background: blockCol }} />}
-                {showFrame && poster && <div style={{ position: 'absolute', inset: 0, background: '#fbfaf6', outline: `4px solid ${INK}` }} />}
+                {showFrame && poster && !grid && <div style={{ position: 'absolute', left: 16, top: 14, width: stageW, height: stageH, background: blockCol }} />}
+                {showFrame && poster && !grid && <div style={{ position: 'absolute', inset: 0, background: '#fbfaf6', outline: `4px solid ${INK}` }} />}
                 {showFrame && !poster && (
                     <svg width={stageW} height={stageH} viewBox={`0 0 ${stageW} ${stageH}`} style={{ position: 'absolute', inset: 0, background: PAPER, overflow: 'hidden' }}>
                         {scene ? scene(s, f, stageH) : null}
                     </svg>
                 )}
                 {/* real pictures (memes, photos) in the frame: each hard-cuts in on its word over the one before */}
-                {photos.map((src, i) => {
+                {grid && photos.map((src, i) => {
+                    // 2 columns, rows as needed; checkerboard of matcha / strawberry offset blocks; credit at the lower left
+                    const a = pAts[i] ?? 0;
+                    if (f < a) return null;
+                    const gap = 30, cols = Math.max(1, Math.round(Number(pp.gridCols) || 2)), rows = Math.ceil(photos.length / cols);   // gridCols: tiles per row (default 2)
+                    const tw = (stageW - gap * (cols - 1) - 16) / cols, th = (stageH - gap * (rows - 1) - 14) / rows;
+                    const col = i % cols, row = Math.floor(i / cols);
+                    const block = (col + row) % 2 === 0 ? STRAW : MATCHA;
+                    const sc = (1.06 - 0.06 * ease(clamp((Math.floor((f - a) / 2) * 2) / 8))) * moveAt(moves, f).s;   // photoMoves: stop-motion punch-ins on the whole grid
+                    const mvg = moveAt(moves, f);
+                    const credit = credits[i] || '';
+                    return (
+                        <div key={i} style={{ position: 'absolute', left: col * (tw + gap), top: row * (th + gap), width: tw, height: th }}>
+                            <div style={{ position: 'absolute', left: 16, top: 14, width: tw, height: th, background: block }} />
+                            <div style={{ position: 'absolute', inset: 0, overflow: 'hidden', background: '#fbfaf6', outline: `4px solid ${INK}` }}>
+                                <Img src={src} style={{ width: '100%', height: '100%', objectFit: (fits[i] || 'cover') as any, objectPosition: poss[i] || 'center', transform: `scale(${sc})`, transformOrigin: `${mvg.x}% ${mvg.y}%` }} />
+                            </div>
+                            {credit && <div style={{ position: 'absolute', left: 14, bottom: 14, background: 'rgba(239,228,204,.85)', color: INK, fontFamily: FONT.arial, fontWeight: 700, fontSize: 24, letterSpacing: 1, padding: '3px 12px', whiteSpace: 'nowrap', lineHeight: 1.1 }}>{credit}</div>}
+                        </div>
+                    );
+                })}
+                {!grid && photos.map((src, i) => {
                     const a = pAts[i] ?? 0;
                     if (f < a || photos.some((_, j) => j > i && f >= (pAts[j] ?? 0))) return null;
                     const sc = poster ? 1.06 - 0.06 * ease(clamp((Math.floor((f - a) / 2) * 2) / 8)) : 1.1 - 0.1 * ease(clamp((f - a) / 10));
@@ -538,15 +564,27 @@ export const ReasonScene: React.FC<P> = (p) => {
                     return (
                         <div key={i} style={{ position: 'absolute', inset: 0, overflow: 'hidden', background: poster ? '#fbfaf6' : '#111' }}>
                             <Img src={src} style={{ width: '100%', height: '100%', objectFit: (fits[i] || 'cover') as any, objectPosition: poss[i] || 'center', transform: `scale(${sc * mv.s})`, transformOrigin: `${mv.x}% ${mv.y}%` }} />
+                            {credits[i] && <div style={{ position: 'absolute', left: 14, bottom: 14, background: 'rgba(239,228,204,.85)', color: INK, fontFamily: FONT.arial, fontWeight: 700, fontSize: 24, letterSpacing: 1, padding: '3px 12px', whiteSpace: 'nowrap', lineHeight: 1.1 }}>{credits[i]}</div>}
                         </div>
                     );
                 })}
                 {photoMarks.length > 0 && (() => { const mv = moveAt(moves, f); return (
                     <div style={{ position: 'absolute', inset: 0, overflow: 'hidden', pointerEvents: 'none' }}>
                     <svg width={stageW} height={stageH} style={{ position: 'absolute', left: 0, top: 0, overflow: 'visible', transform: `scale(${mv.s})`, transformOrigin: `${mv.x}% ${mv.y}%` }}>
-                        {photoMarks.filter((m) => f >= m.at && (m.out == null || f < m.out)).map((m, i) =>
+                        {photoMarks.filter((m: any) => !m.rects && f >= m.at && (m.out == null || f < m.out)).map((m, i) =>
                             <PenBox key={i} x={m.x} y={m.y} w={m.w} h={m.h} k={clamp((Math.floor((f - m.at) / 2) * 2) / 8)} />)}
-                    </svg></div>); })()}
+                    </svg>
+                    {/* MARKER highlights on text documents (user, 2026-11-22: "use the mouse highlighting effect, matcha or strawberry, to highlight a specific part of the article"):
+                        a translucent swipe left to right over exactly the words, one rect per line, multiplied so the text stays readable. rects are % of the panel. */}
+                    <div style={{ position: 'absolute', inset: 0, transform: `scale(${mv.s})`, transformOrigin: `${mv.x}% ${mv.y}%` }}>
+                        {photoMarks.filter((m: any) => m.rects && f >= m.at && (m.out == null || f < m.out)).map((m: any, i) =>
+                            (m.rects as number[][]).map((r, j) => {
+                                const t = Math.floor((f - m.at - j * 6) / 2) * 2, k = clamp(t / 8);
+                                if (k <= 0) return null;
+                                const c = m.color === 'straw' ? '199,56,90' : '63,127,69';
+                                return <div key={`${i}-${j}`} style={{ position: 'absolute', left: `${r[0]}%`, top: `${r[1]}%`, width: `${r[2] * ease(k)}%`, height: `${r[3]}%`, background: `rgba(${c},${m.color === 'straw' ? 0.4 : 0.46})`, mixBlendMode: 'multiply', borderRadius: '3px 9px 5px 11px', transform: 'skewX(-5deg)', boxShadow: `0 0 0 1px rgba(${c},.25)` }} />;
+                            }))}
+                    </div></div>); })()}
                 {poster && showFrame && <div style={{ position: 'absolute', inset: 0, overflow: 'hidden', pointerEvents: 'none' }}><Grain id={`rsg${Number(p.number) || 0}`} opacity={0.12} seed={5} /></div>}
                 {label && f >= labelAt && (
                     <div style={{ position: 'absolute', left: 0, right: 0, top: labelY, display: 'flex', justifyContent: 'center' }}>

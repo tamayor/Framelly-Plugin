@@ -17,9 +17,9 @@ const GHOST = 'M-48 40 L-48 -14 C-48 -48 -24 -70 0 -70 C24 -70 48 -48 48 -14 L48
 const MIS = { x: 9, y: 7 };   // the second plate's misregistration
 
 type P = { word?: string; wordAt?: number; size?: number; cx?: number; cy?: number; mark?: string; markAt?: number;
-    doodle?: string; doodleAt?: number; color?: string; strip?: boolean; border?: boolean | string };
+    doodle?: string; doodleAt?: number; color?: string; strip?: boolean; border?: boolean | string; stickers?: string };
 
-const settle = (t: number) => (t < 0 ? 0 : 1.1 - 0.1 * ease(clamp(Math.floor(t / 2) * 2 / 8)));
+export const settle = (t: number) => (t < 0 ? 0 : 1.1 - 0.1 * ease(clamp(Math.floor(t / 2) * 2 / 8)));
 
 // Riso defs: the soy-ink mottle + paper tooth (knocks speckles and soft patches out of every ink) and halftone dots.
 // The noise seed changes every 4 frames, like the line boil, so the print "breathes" on twos.
@@ -39,6 +39,50 @@ const Defs: React.FC<{ seed: number }> = ({ seed }) => (
     </defs>
 );
 
+
+// ---- context stickers (Ep. 16, user 2026-11-22: "add elements / sticker in talking heads to improve the context") ----
+// Die-cut riso stickers at the side edges of the speaking shot, outside the face: a cream disc with an ink outline and a
+// strawberry plate out of register, a flat icon of the thing being said. `stickers` = JSON [{kind, side: 'l'|'r', slot: 0|1, at}]
+// (`at` = frames from the clip start, on the spoken word). Pop in at 110 % settling on twos, then bob.
+const ST = 5;   // inner outline
+export const icon = (kind: string): React.ReactNode => {
+    const o = { stroke: INK, strokeWidth: ST, strokeLinejoin: 'round' as const, strokeLinecap: 'round' as const };
+    switch (kind) {
+        case 'gift': return <g {...o}><rect x={-40} y={-14} width={80} height={54} rx={6} fill={MATCHA} /><rect x={-47} y={-32} width={94} height={20} rx={6} fill={MATCHA} /><rect x={-8} y={-32} width={16} height={72} fill={CREAM} /><path d="M0 -32 q-34 -40 -42 -8 q24 14 42 8 q18 6 42 -8 q-8 -32 -42 8" fill={CREAM} /></g>;
+        case 'palm': return <g {...o}><path d="M-26 44 L-30 12 L-52 -6 Q-62 -16 -52 -22 Q-44 -24 -38 -16 L-30 -4 L-30 -14 A7.5 7.5 0 0 1 -15 -14 L-15 -6 L-15 -30 A7.5 7.5 0 0 1 0 -30 L0 -6 L0 -38 A7.5 7.5 0 0 1 15 -38 L15 -6 L15 -28 A7.5 7.5 0 0 1 30 -28 L30 14 L26 44 Z" fill={CREAM} /></g>;
+        case 'fist': return <g {...o}><rect x={-36} y={-30} width={72} height={62} rx={20} fill={CREAM} /><path d="M-12 -30 v24 M12 -30 v24" /><rect x={-30} y={32} width={60} height={16} fill={STRAW} /></g>;
+        case 'family': return <g stroke={INK} strokeWidth={4} strokeLinejoin="round"><circle cx={-30} cy={-34} r={12} fill={INK} /><rect x={-46} y={-20} width={32} height={58} rx={12} fill={INK} /><circle cx={26} cy={-30} r={12} fill={STRAW} /><rect x={10} y={-16} width={32} height={54} rx={12} fill={STRAW} /><circle cx={-2} cy={-2} r={9} fill={MATCHA} /><rect x={-12} y={8} width={20} height={30} rx={8} fill={MATCHA} /></g>;
+        case 'hall': return <g {...o}><path d="M-52 -14 L0 -50 L52 -14 Z" fill={STRAW} /><rect x={-46} y={-12} width={92} height={10} fill={CREAM} />{[-34, -12, 10, 32].map((x) => <rect key={x} x={x - 6} y={-2} width={12} height={36} fill={CREAM} />)}<rect x={-54} y={34} width={108} height={12} fill={INK} /></g>;
+        case 'ledger': return <g {...o}><rect x={-42} y={-44} width={84} height={90} rx={8} fill={CREAM} /><rect x={-42} y={-44} width={84} height={16} fill={INK} /><path d="M-28 -10 H28 M-28 6 H28 M-28 22 H10" stroke={STRAW} strokeWidth={6} /></g>;
+        case 'heart': return <g transform="scale(1.7)" stroke={INK} strokeWidth={ST / 1.7} strokeLinejoin="round"><path d={HEART} fill={MATCHA} /></g>;
+        case 'brokenheart': return <g><g transform="scale(1.7)" stroke={INK} strokeWidth={ST / 1.7} strokeLinejoin="round"><path d={HEART} fill={STRAW} /></g><path d="M-4 -36 L10 -10 L-10 6 L6 38" fill="none" stroke={INK} strokeWidth={ST} strokeLinejoin="round" /></g>;
+        case 'help': return <g><g transform="translate(0 -40) scale(0.8)" stroke={INK} strokeWidth={ST} strokeLinejoin="round"><path d={HEART} fill={MATCHA} /></g><g transform="translate(0 26) scale(0.75)" {...o}><path d="M-26 44 L-30 12 L-52 -6 Q-62 -16 -52 -22 Q-44 -24 -38 -16 L-30 -4 L-30 -14 A7.5 7.5 0 0 1 -15 -14 L-15 -6 L-15 -30 A7.5 7.5 0 0 1 0 -30 L0 -6 L0 -38 A7.5 7.5 0 0 1 15 -38 L15 -6 L15 -28 A7.5 7.5 0 0 1 30 -28 L30 14 L26 44 Z" fill={CREAM} /></g></g>;
+        case 'check': return <g><circle r={48} fill={MATCHA} stroke={INK} strokeWidth={ST} /><path d="M-24 2 l16 18 l32 -38" fill="none" stroke={CREAM} strokeWidth={13} strokeLinecap="round" strokeLinejoin="round" /></g>;
+        case 'cheque': return <g {...o}><rect x={-58} y={-30} width={116} height={64} rx={6} fill={CREAM} /><path d="M-44 -14 H20 M-44 2 H0" stroke={INK} strokeWidth={3} /><path d="M-4 24 q8 -22 14 -2 q6 -20 14 0 q8 -12 16 -6" fill="none" stroke={STRAW} strokeWidth={5} /><rect x={30} y={-24} width={20} height={14} fill={MATCHA} /></g>;
+        case 'coins': return <g {...o}>{[22, 2, -18, -38].map((y, i) => <g key={i}><ellipse cx={0} cy={y + 8} rx={42} ry={14} fill={MATCHA} /><ellipse cx={0} cy={y} rx={42} ry={14} fill={CREAM} /></g>)}</g>;
+        case 'handshake': return <g {...o}><rect x={-62} y={-18} width={34} height={36} rx={6} fill={INK} /><rect x={28} y={-18} width={34} height={36} rx={6} fill={STRAW} /><rect x={-30} y={-24} width={60} height={46} rx={14} fill={CREAM} /><path d="M-14 -24 v20 M2 -24 v20 M18 -24 v20" /></g>;
+        case 'cross': return <g><circle r={48} fill={STRAW} stroke={INK} strokeWidth={ST} /><path d="M-22 -22 L22 22 M22 -22 L-22 22" stroke={CREAM} strokeWidth={13} strokeLinecap="round" /></g>;
+        case 'pawn': return <g {...o}><circle cx={0} cy={-30} r={16} fill={INK} /><path d="M-12 -16 H12 L18 20 H-18 Z" fill={INK} /><rect x={-30} y={20} width={60} height={14} rx={6} fill={INK} /><rect x={-22} y={-14} width={44} height={8} fill={STRAW} /></g>;
+        case 'eye': return <g {...o}><path d="M-56 0 Q0 -50 56 0 Q0 50 -56 0 Z" fill={CREAM} /><circle r={20} fill={INK} /><circle cx={-6} cy={-6} r={6} fill={CREAM} stroke="none" /></g>;
+        default: return null;
+    }
+};
+const Stickers: React.FC<{ list: { kind: string; side?: string; slot?: number; at?: number; bare?: boolean }[]; f: number }> = ({ list, f }) => (
+    <g>{list.map((s, i) => {
+        const t = f - (Number(s.at) || 0);
+        if (t < 0) return null;
+        const x = s.side === 'r' ? 920 : 160, y = (s.slot ? 1060 : 790) + (Math.floor(f / 4) % 2 ? -4 : 0), k = settle(t), rot = (s.side === 'r' ? 5 : -5) + (i % 2 ? 2 : -2);
+        return (
+            <g key={i} transform={`translate(${x} ${y}) rotate(${rot}) scale(${k})`} style={{ filter: 'url(#ta-riso)' }}>
+                {/* bare element (edit prompt: talking-shot elements have no disc) or the older die-cut disc */}
+                {!s.bare && <circle r={80} cx={MIS.x} cy={MIS.y} fill={i % 2 ? MATCHA : STRAW} />}
+                {!s.bare && <circle r={80} fill="#fbfaf6" stroke={INK} strokeWidth={6} />}
+                <g transform={s.bare ? 'scale(1.35)' : 'scale(0.9)'}>{icon(s.kind)}</g>
+            </g>
+        );
+    })}</g>
+);
+
 export const TalkAccent: React.FC<P> = (p) => {
     const f = useCurrentFrame();
     const { width, height } = useVideoConfig();
@@ -52,6 +96,8 @@ export const TalkAccent: React.FC<P> = (p) => {
     const borderMode = p.border === true ? 'riso' : (p.border && p.border !== 'none' ? String(p.border) : 'none');
     const boxed = doodle === 'bubble' || doodle === 'tarp';
     const strip = p.strip !== false && !boxed;
+    let stickersList: { kind: string; side?: string; slot?: number; at?: number; bare?: boolean }[] = [];
+    try { stickersList = p.stickers ? JSON.parse(String(p.stickers)) : []; } catch { stickersList = []; }
     const letters = word.split('');
     const gone = (i: number) => doodle === 'fade' && tD >= 0 && tD >= 10 + i * 3;   // letters vanish one by one
     const midY = cy - size * 0.32;
@@ -159,6 +205,7 @@ export const TalkAccent: React.FC<P> = (p) => {
                     {r === 0 && <path d={waveBand(x0, y + 10, w, 26, 16, 30)} fill="url(#ta-dots)" opacity={0.25} />}
                 </g>;
             })}
+            {stickersList.length > 0 && <Stickers list={stickersList} f={f} />}
         </svg>
     );
 };
