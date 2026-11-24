@@ -41,6 +41,19 @@ function textWords(text) {
     return { words: out, letters: i };
 }
 
+// UK text over a US transcript (stigmatised / stigmatized, colour / color) or a one-letter mishearing: words of 5+
+// letters that differ by one substitution, insertion or deletion are the same word.
+function oneEditApart(a, b) {
+    if (Math.min(a.length, b.length) < 5 || Math.abs(a.length - b.length) > 1) return false;
+    let i = 0, j = 0, edits = 0;
+    while (i < a.length && j < b.length) {
+        if (a[i] === b[j]) { i++; j++; continue; }
+        if (++edits > 1) return false;
+        if (a.length > b.length) i++; else if (b.length > a.length) j++; else { i++; j++; }
+    }
+    return edits + (a.length - i) + (b.length - j) <= 1;
+}
+
 // Gives each text word a spoken time { start, end, matched }. Words are matched in order by their letters (a word
 // may be up to 3 spoken words ahead: fillers, a word the subtitle left out); the rest are spread between the matched
 // ones. With nothing matched the text words are spread over the spoken ones in order.
@@ -55,7 +68,7 @@ function alignWords(tWords, spoken) {
         if (!t) continue;
         for (let q = p; q < Math.min(sp.length, p + 4); q++) {
             const s = norm(sp[q].w);
-            if (s && (s === t || (t.length > 3 && (s.startsWith(t) || t.startsWith(s))))) { at[j] = q; p = q + 1; break; }
+            if (s && (s === t || (t.length > 3 && (s.startsWith(t) || t.startsWith(s))) || oneEditApart(s, t))) { at[j] = q; p = q + 1; break; }
         }
     }
     const matched = at.filter(q => q >= 0).length;

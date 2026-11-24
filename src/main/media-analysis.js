@@ -10,7 +10,7 @@ const QUIET_SPEECH_DB = -50;        // a span whose loud parts stay under this i
 
 module.exports = {
     ffmpegBin, ffprobeBin, probeMedia, audioEnvelope, pausesFromEnvelope, findPauses, sceneCuts, shotsFromCuts,
-    frameContent, beatGrid, findBeats, snapCuts, sourceMapper, pickSegments, analyseTimeline, transcribeTimeline, cachedTimelineWords, guessLanguage, renderFlags, asrStatus, transcribeWords, cachedWords, installAsr, stopAsr, ensureAsrModel,
+    frameContent, beatGrid, findBeats, snapCuts, sourceMapper, pickSegments, analyseTimeline, transcribeTimeline, cachedTimelineWords, guessLanguage, renderFlags, asrStatus, transcribeWords, cachedWords, installAsr, stopAsr, ensureAsrModel, refineWordTimes, pcmEnvelope, refineCaches,
     QUIET_SPEECH_DB
 };
 
@@ -477,6 +477,171 @@ function windowMargin(start, duration, from, to) {
     return Math.min(before, after);
 }
 
+// ------------------------------------------------------------------ word edges on the sound
+
+// Whisper's word times come from its attention, not from the sound: a word after a pause starts where the word before
+// it ended (the pause is added to its front: "I" said 0.25 s late comes in 0.25 s early), the first word of a window is
+// pulled back to the window's start, and the last word before a pause runs into it. refineWordTimes moves each word's
+// start onto the frame its sound begins and its end onto the frame it dies away, measured on the same audio the engine
+// heard. A word whose span has no sound (the engine guessed it) keeps its times.
+const WORD_REFINE = 1;               // version of refineWordTimes in the caches (older caches are refined on read)
+const MIN_WORD_S = 0.06;             // a refined word keeps at least this much
+const LOOK_S = 0.2;                  // how far a start may move OUT of the engine's span (an end twice that)
+const RELEASE_S = 0.03;              // a word ends this long after its sound drops under the edge level
+const CONSONANT_H = 12;              // hops (10 ms): the longest a soft first consonant runs before the vowel
+
+// 10 ms RMS levels (dBFS) of 16-bit mono PCM: { hop, db: Float32Array }.
+function pcmEnvelope(pcm, rate) {
+    const hopN = Math.max(1, Math.round(rate * HOP));
+    const n = Math.floor(pcm.length / 2 / hopN);
+    const db = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+        let s = 0;
+        for (let k = 0; k < hopN; k++) { const v = pcm.readInt16LE((i * hopN + k) * 2) / 32768; s += v * v; }
+        db[i] = 10 * Math.log10(s / hopN + 1e-10);
+    }
+    return { hop: HOP, db };
+}
+
+// words [{ w, start, end }] in seconds from the envelope's start -> the same words with start / end on the sound.
+// Two levels from the recording itself: `voiced` (22 dB under the speech level, as pausesFromEnvelope) says a stretch
+// is speech; `edge` (the quietest level still clearly over the room tone) is where a word's sound starts and ends, so
+// a soft first consonant ("f", "s", "h") is part of the word.
+function refineWordTimes(words, env) {
+    const db = env && env.db;
+    if (!db || !db.length || !Array.isArray(words) || !words.length) return words || [];
+    const hop = env.hop || HOP;
+    const speech = percentile(db, 0.9);
+    if (speech < QUIET_SPEECH_DB) return words.map(w => Object.assign({}, w));        // room tone only: nothing to measure
+    const noise = percentile(db, 0.1);
+    const voiced = Math.max(-50, Math.min(-24, speech - 22));
+    const edge = Math.min(voiced - 4, Math.max(noise + 8, speech - 40));
+    const N = db.length;
+    const at = (t) => Math.max(0, Math.min(N - 1, Math.round(t / hop)));
+    const minH = Math.max(1, Math.round(MIN_WORD_S / hop)), look = Math.round(LOOK_S / hop), rel = Math.round(RELEASE_S / hop);
+    // speech (a voiced hop) within the next / previous few hops: a click or a breath alone is not a word's edge
+    const voicedNear = (i, dir) => { for (let k = 0; k < 8; k++) { const j = i + dir * k; if (j >= 0 && j < N && db[j] >= voiced) return true; } return false; };
+    const out = words.map(w => Object.assign({}, w));
+    let prevEnd = -Infinity;
+    for (let n = 0; n < out.length; n++) {
+        const w = out[n];
+        if (!(Number.isFinite(w.start) && Number.isFinite(w.end))) continue;
+        const s0 = at(w.start), e0 = Math.max(s0 + 1, Math.min(N, Math.round(w.end / hop)));
+        let peak = -Infinity;
+        for (let i = s0; i < e0; i++) peak = Math.max(peak, db[i]);
+        if (peak < voiced) { prevEnd = Math.max(prevEnd, w.end); continue; }       // no speech where the engine put it
+        // the word's own edge level: under its loudest part by 22 dB at most, so a hum or the next room's noise
+        // between two words (often 15 dB over the room tone) is not taken for the word
+        const wEdge = Math.max(edge, peak - 22);
+        const loud = (i) => i >= 0 && i < N && db[i] >= wEdge;
+        const floor = Math.max(0, Number.isFinite(prevEnd) ? Math.ceil(prevEnd / hop - 1e-6) : 0);
+        const nextStart = n + 1 < out.length && Number.isFinite(out[n + 1].start) ? at(out[n + 1].start) : N;
+        let s = s0, e = e0;
+        // start: on silence -> forward to the first hop of sound that leads into speech (there is one: the peak);
+        // on sound -> back to where that sound began, when a silence comes within LOOK_S after the previous word
+        if (!loud(s0) || !voicedNear(s0, 1)) {
+            let k = s0;
+            while (k < e0 - 1 && !(loud(k) && voicedNear(k, 1))) k++;
+            s = k;
+        } else {
+            const lim = Math.max(floor, s0 - look);
+            let k = s0 - 1;
+            while (k >= lim && loud(k)) k--;
+            if (k >= lim) s = k + 1;
+        }
+        // a start on a level far under the word's own (a hum, the room of the other shot at a cut) that holds there
+        // longer than a consonant does: the word starts where its sound rises out of it
+        const rise = peak - 12;
+        let kr = s;
+        while (kr < e0 && db[kr] < rise) kr++;
+        if (kr < e0 && kr - s > CONSONANT_H) {
+            const bed = percentile(db.subarray(s, kr - Math.min(CONSONANT_H, kr - s - 1)), 0.5) + 6;
+            let k = kr;
+            while (k > kr - CONSONANT_H && db[k - 1] >= bed) k--;
+            s = k;
+        }
+        s = Math.max(s, floor);
+        // end: on silence -> back to the last hop of speech (plus the release); on sound -> forward to where it dies
+        // away, when that is within LOOK_S and before the next word
+        if (!loud(e0 - 1) || !voicedNear(e0 - 1, -1)) {
+            let k = e0 - 1;
+            while (k > s && !(loud(k) && voicedNear(k, -1))) k--;
+            e = Math.min(e0, k + 1 + rel);
+        } else {
+            const lim = Math.min(N, Math.max(e0, nextStart), e0 + 2 * look);
+            let k = e0;
+            while (k < lim && loud(k)) k++;
+            if (k < lim) e = Math.min(lim, k + rel);
+        }
+        e = Math.max(e, s + minH);
+        w.start = r3(s * hop);
+        w.end = r3(e * hop);
+        prevEnd = w.end;
+    }
+    return out;
+}
+
+// The samples of a WAV file (its "data" chunk; ffmpeg writes a LIST chunk before it, so it is not always at byte 44).
+function wavSamples(buf) {
+    let i = 12;
+    while (i + 8 <= buf.length) {
+        const id = buf.toString('ascii', i, i + 4), len = buf.readUInt32LE(i + 4);
+        if (id === 'data') return buf.subarray(i + 8, Math.min(buf.length, i + 8 + len));
+        i += 8 + len + (len % 2);
+    }
+    return buf.subarray(Math.min(44, buf.length));
+}
+
+// 16 kHz mono PCM of a window of a file (what transcribeWords gives the engine), for the word edges of an older cache.
+async function filePcm(file, start, dur) {
+    const r = await runFfmpeg(windowArgs(file, start, dur).concat(['-vn', '-map', '0:a:0', '-ac', '1', '-ar', '16000', '-f', 's16le', '-c:a', 'pcm_s16le', '-']),
+        { raw: true, maxBuffer: Math.max(64 * 1024 * 1024, Math.ceil((dur > 0 ? dur : 4 * 3600) * 32000) + 4 * 1024 * 1024) });
+    return Buffer.isBuffer(r.stdout) ? r.stdout : Buffer.alloc(0);
+}
+
+// Word timings cached before refineWordTimes (or by an older version of it) get their edges on the sound once: the
+// engine's own times are kept as `raw`, the refined ones replace `words`. A record whose media is offline is left as
+// it is (tried again next time). Runs once per process (both cache folders); every reader of the caches awaits it.
+let refineRun = null;
+function refineCaches(opts) {
+    if (refineRun && !(opts && opts.again)) return refineRun;
+    refineRun = (async () => {
+        let done = 0;
+        for (const dir of [WORDS_CACHE_DIR, TL_WORDS_DIR]) {
+            let names = [];
+            try { names = fs.readdirSync(dir).filter(n => n.endsWith('.json')); } catch (e) { continue; }
+            for (const name of names) {
+                const file = path.join(dir, name);
+                let j;
+                try { j = JSON.parse(fs.readFileSync(file, 'utf8')); } catch (e) { continue; }
+                if (!j || j.refine === WORD_REFINE || !Array.isArray(j.words)) continue;
+                const raw = Array.isArray(j.raw) ? j.raw : j.words;
+                try {
+                    if (j.timeline) {
+                        if (!(j.pieces || []).every(pc => fs.existsSync(pc.file))) continue;
+                        const env = pcmEnvelope(await timelinePcm(j.pieces, j.from, j.to, j.fps), TL_RATE);
+                        const sec = raw.map(w => ({ w: w.w, start: (w.start - j.from) / j.fps, end: (w.end - j.from) / j.fps }));
+                        const fr = (x) => Math.round(x * 100) / 100;
+                        j.words = refineWordTimes(sec, env).map(w => ({ w: w.w, start: fr(j.from + w.start * j.fps), end: fr(j.from + w.end * j.fps) }));
+                    } else {
+                        if (!fs.existsSync(j.file)) continue;
+                        const env = pcmEnvelope(await filePcm(j.file, j.start || 0, j.duration || 0), 16000);
+                        const off = j.start || 0;
+                        j.words = refineWordTimes(raw.map(w => ({ w: w.w, start: w.start - off, end: w.end - off })), env)
+                            .map(w => ({ w: w.w, start: r3(w.start + off), end: r3(w.end + off) }));
+                    }
+                } catch (e) { continue; }
+                j.raw = raw;
+                j.refine = WORD_REFINE;
+                const tmp = file + '.' + process.pid + '.tmp';
+                try { fs.writeFileSync(tmp, JSON.stringify(j)); fs.renameSync(tmp, file); done++; } catch (e) { try { fs.unlinkSync(tmp); } catch (x) { /* gone */ } }
+            }
+        }
+        return done;
+    })().catch(() => 0);
+    return refineRun;
+}
+
 // Cached word timings that cover file seconds [from, to], from any earlier transcribe_words run of this file. Of the
 // runs that cover it, the one with the most sound around the span (the whole file first). opts.minMargin: only a run
 // with at least that many seconds around the span (else null, so the caller transcribes a wider window).
@@ -706,6 +871,7 @@ async function transcribeWords(file, opts) {
     const key = wordsCacheKey(f, start, dur, pick.engine, model, o.language);
     const cacheFile = path.join(WORDS_CACHE_DIR, key + '.json');
     if (!o.refresh) {
+        await refineCaches();
         try { const j = JSON.parse(fs.readFileSync(cacheFile, 'utf8')); return Object.assign({ cached: true }, j); } catch (e) { /* not cached */ }
     }
     stopAsr();          // an earlier run left behind would hold the model's download lock
@@ -722,10 +888,14 @@ async function transcribeWords(file, opts) {
             });
         } catch (e) { throw new Error(/Cancelled/.test(e.message) ? 'Cancelled' : pick.engine + ' failed: ' + e.message); }
         const line = String(out).trim().split('\n').filter(l => l.startsWith('[')).pop() || '[]';
-        const words = JSON.parse(line).filter(w => w.w && Number.isFinite(w.start) && Number.isFinite(w.end))
-            .map(w => ({ w: w.w, start: r3(w.start + start), end: r3(w.end + start) }));
+        const heard = JSON.parse(line).filter(w => w.w && Number.isFinite(w.start) && Number.isFinite(w.end));
+        const raw = heard.map(w => ({ w: w.w, start: r3(w.start + start), end: r3(w.end + start) }));
+        // each word's start / end on the sound the engine heard
+        const env = pcmEnvelope(wavSamples(fs.readFileSync(wav)), 16000);
+        const words = refineWordTimes(heard, env).map(w => ({ w: w.w, start: r3(w.start + start), end: r3(w.end + start) }));
         const st = fs.statSync(f);
-        const rec = { file: f, size: st.size, mtime: Math.round(st.mtimeMs), start, duration: dur, engine: pick.engine, model, language: o.language || null, words };
+        const rec = { file: f, size: st.size, mtime: Math.round(st.mtimeMs), start, duration: dur, engine: pick.engine, model, language: o.language || null,
+            refine: WORD_REFINE, words, raw };
         fs.mkdirSync(WORDS_CACHE_DIR, { recursive: true });
         fs.writeFileSync(cacheFile, JSON.stringify(rec));
         return Object.assign({ cached: false }, rec);
@@ -851,6 +1021,7 @@ async function transcribeTimeline(segs, from, to, fps, opts) {
     const lo = Math.max(0, Math.floor(from - ctx), Math.min(...pieces.map(p => p.tlStart)));
     const hi = Math.min(Math.ceil(to + ctx), Math.max(...pieces.map(p => p.tlEnd)));
     if (!o.refresh) {
+        await refineCaches();
         const c = cachedTimelineWords(segs, from, to, { minMargin: Math.min(ctx, from - lo, hi - to) });
         if (c) return { words: c, cached: true };
     }
@@ -872,7 +1043,8 @@ async function transcribeTimeline(segs, from, to, fps, opts) {
     const wav = path.join(tmp, 'timeline.wav');
     try {
         if (o.progress) o.progress('Joining the timeline\'s dialogue');
-        wavFile(await timelinePcm(used, lo, hi, fps), wav);
+        const pcm = await timelinePcm(used, lo, hi, fps);
+        wavFile(pcm, wav);
         const secs = (hi - lo) / fps;
         let out;
         try {
@@ -883,10 +1055,12 @@ async function transcribeTimeline(segs, from, to, fps, opts) {
         } catch (e) { throw new Error(/Cancelled/.test(e.message) ? 'Cancelled' : pick.engine + ' failed: ' + e.message); }
         const line = String(out).trim().split('\n').filter(l => l.startsWith('[')).pop() || '[]';
         const fr = (x) => Math.round(x * 100) / 100;
-        const words = JSON.parse(line).filter(w => w.w && Number.isFinite(w.start) && Number.isFinite(w.end))
-            .map(w => ({ w: w.w, start: fr(lo + w.start * fps), end: fr(lo + w.end * fps) }));
+        const heard = JSON.parse(line).filter(w => w.w && Number.isFinite(w.start) && Number.isFinite(w.end));
+        const toFrames = (w) => ({ w: w.w, start: fr(lo + w.start * fps), end: fr(lo + w.end * fps) });
+        // each word's start / end on the sound the engine heard (see refineWordTimes)
+        const words = refineWordTimes(heard, pcmEnvelope(pcm, TL_RATE)).map(toFrames);
         const rec = { timeline: true, from: lo, to: hi, toEnd: Number.isFinite(o.timelineEnd) && hi >= o.timelineEnd, fps,
-            engine: pick.engine, model, language: lang || null, pieces: used, words };
+            engine: pick.engine, model, language: lang || null, pieces: used, refine: WORD_REFINE, words, raw: heard.map(toFrames) };
         fs.mkdirSync(TL_WORDS_DIR, { recursive: true });
         fs.writeFileSync(cacheFile, JSON.stringify(rec));
         return { words: words.filter(w => w.end > from && w.start < to), engine: pick.engine, cached: false };

@@ -388,6 +388,7 @@ async function spokenWordsFor(start, end, opts) {
     if (!inSpan.length) return { words: [], cached: false };
     let words, cached = true;
     if (opts && opts.cachedOnly) {
+        await MEDIA.refineCaches();         // older caches: word edges on the sound (once)
         words = cachedSpanWords(media, segs, start, end, { fileFallback: true });
         if (!words) return { words: [], cached: false };
     } else {

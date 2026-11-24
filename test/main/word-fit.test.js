@@ -205,3 +205,12 @@ test('a long letter animation (Blur In Fade) is fully in when the last word is s
     const segs = WF.wordSegsFromInfo({ target: 'animtime', terms: [term], fitted: true, keys: plan.keys }, [], 16).segs;
     assert.deepEqual(segs.map(g => [g.s, g.e]), [[6, 12]]);
 });
+
+test('UK text matches a US transcript word one letter apart (stigmatised / stigmatized)', () => {
+    const spoken = [{ w: 'heavily', start: 0, end: 5.5 }, { w: 'stigmatized', start: 5.5, end: 20 }];
+    const plan = WF.planAnimKeys({ a: 15, delay: 0.6, text: 'stigmatised' }, spoken, 25);
+    assert.equal(plan.matched, 1);
+    assert.equal(plan.start, 6);
+    const short = WF.planAnimKeys({ a: 15, delay: 0.6, text: 'cat' }, [{ w: 'cut', start: 3, end: 6 }], 25);
+    assert.equal(short.matched, 0);          // short words still need to be the same
+});

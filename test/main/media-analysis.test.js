@@ -127,3 +127,68 @@ test('guessLanguage: English subtitles are heard as English, other text is left 
     assert.equal(MA.guessLanguage(['Beri saya 60 saat dan saya akan tunjukkan cara membuat wang yang banyak']), null);
     assert.equal(MA.guessLanguage(['Hi']), null);
 });
+
+// ------------------------------------------------------------------ refineWordTimes: word edges on the sound
+// A synthetic 10 ms envelope: room tone at -55 dBFS with speech bursts. levels(spans): [[from s, to s, dB], ...]
+function envOf(seconds, spans) {
+    const db = new Float32Array(Math.round(seconds / 0.01)).fill(-55);
+    for (const [a, b, v] of spans) for (let i = Math.round(a / 0.01); i < Math.round(b / 0.01); i++) db[i] = v;
+    return { hop: 0.01, db };
+}
+
+test('refineWordTimes: a word after a pause starts where its sound does, not where the word before ended', () => {
+    // "look," said 0.0-0.4 s; a pause; "I" said 1.0-1.15, "have" 1.15-1.4. Whisper: "I" from 0.4 (the pause added)
+    const env = envOf(2, [[0, 0.4, -18], [1.0, 1.15, -16], [1.15, 1.4, -18]]);
+    const r = M.refineWordTimes([
+        { w: 'look,', start: 0, end: 0.4 }, { w: 'I', start: 0.4, end: 1.12 }, { w: 'have', start: 1.12, end: 1.4 }
+    ], env);
+    assert.ok(Math.abs(r[1].start - 1.0) <= 0.011, 'I starts on its sound: ' + r[1].start);
+    assert.ok(r[1].end > r[1].start && r[2].start >= r[1].end - 1e-9);
+    assert.strictEqual(r[0].start, 0);
+});
+
+test('refineWordTimes: a hum before the word (another shot\'s room at a cut) is not the word', () => {
+    // -30 dB for 0.25 s, then the word at -13 dB
+    const env = envOf(1.5, [[0.1, 0.35, -30], [0.35, 0.6, -13], [0.6, 0.9, -40]]);
+    const r = M.refineWordTimes([{ w: 'But', start: 0.1, end: 0.6 }], env);
+    assert.ok(Math.abs(r[0].start - 0.35) <= 0.021, 'starts on the rise: ' + r[0].start);
+});
+
+test('refineWordTimes: a soft first consonant stays part of the word', () => {
+    // "f" at -32 dB for 60 ms, the vowel at -15
+    const env = envOf(1, [[0.3, 0.36, -32], [0.36, 0.6, -15]]);
+    const r = M.refineWordTimes([{ w: 'fully', start: 0.2, end: 0.6 }], env);
+    assert.ok(Math.abs(r[0].start - 0.3) <= 0.011, 'starts on the f: ' + r[0].start);
+});
+
+test('refineWordTimes: an end stretched into the pause comes back; a cut-short end goes on with the sound', () => {
+    const env = envOf(3, [[0, 0.5, -18], [1.5, 2.0, -18]]);
+    const r = M.refineWordTimes([{ w: 'sum.', start: 0, end: 1.2 }, { w: 'okay', start: 1.5, end: 1.8 }], env);
+    assert.ok(r[0].end >= 0.5 && r[0].end <= 0.55, 'sum ends after its sound: ' + r[0].end);
+    assert.ok(r[1].end >= 2.0 && r[1].end <= 2.05, 'okay runs to its sound: ' + r[1].end);
+});
+
+test('refineWordTimes: words where there is no sound, or silence only, keep the engine\'s times', () => {
+    const env = envOf(2, [[0, 0.5, -18]]);
+    const w = [{ w: 'a', start: 0, end: 0.5 }, { w: 'ghost', start: 1.0, end: 1.3 }];
+    const r = M.refineWordTimes(w, env);
+    assert.deepStrictEqual(r[1], w[1]);
+    const quiet = M.refineWordTimes(w, envOf(2, []));
+    assert.deepStrictEqual(quiet, w);
+    assert.notStrictEqual(quiet[0], w[0], 'copies, the input is not changed');
+});
+
+test('refineWordTimes: starts never go before the previous word\'s end and words keep their order', () => {
+    const env = envOf(2, [[0, 1.6, -18]]);         // one long sound: connected speech
+    const w = [{ w: 'a', start: 0, end: 0.3 }, { w: 'b', start: 0.3, end: 0.31 }, { w: 'c', start: 0.31, end: 0.9 }];
+    const r = M.refineWordTimes(w, env);
+    for (let i = 1; i < r.length; i++) assert.ok(r[i].start >= r[i - 1].end - 1e-9 && r[i].end > r[i].start, JSON.stringify(r));
+});
+
+test('pcmEnvelope: 10 ms RMS levels of 16-bit PCM', () => {
+    const pcm = Buffer.alloc(16000 * 2 * 0.05);           // 50 ms
+    for (let i = 160 * 2; i < 160 * 3; i++) pcm.writeInt16LE(i % 2 ? 16384 : -16384, i * 2);   // hop 2 at -6 dBFS
+    const env = M.pcmEnvelope(pcm, 16000);
+    assert.strictEqual(env.db.length, 5);
+    assert.ok(Math.abs(env.db[2] - -6.02) < 0.1 && env.db[0] < -90);
+});
