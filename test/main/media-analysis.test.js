@@ -192,3 +192,52 @@ test('pcmEnvelope: 10 ms RMS levels of 16-bit PCM', () => {
     assert.strictEqual(env.db.length, 5);
     assert.ok(Math.abs(env.db[2] - -6.02) < 0.1 && env.db[0] < -90);
 });
+
+// spans as envOf, plus the treble band: hfSpans [[from s, to s, dB]] over a -75 dB treble floor
+function envHf(seconds, spans, hfSpans) {
+    const e = envOf(seconds, spans);
+    e.hf = new Float32Array(e.db.length).fill(-75);
+    for (const [a, b, v] of hfSpans || []) for (let i = Math.round(a / 0.01); i < Math.round(b / 0.01); i++) e.hf[i] = v;
+    return e;
+}
+
+test('refineWordTimes: a start on the fading tail of the word before moves past the pause after it', () => {
+    // "them" fades from -27 to -36 over 0.5-0.65, a pause, "the" at 0.85. Whisper: "the" from 0.5
+    const spans = [[0, 0.5, -18]];
+    for (let i = 0; i < 15; i++) spans.push([0.5 + i * 0.01, 0.51 + i * 0.01, -27 - i * 0.6]);
+    spans.push([0.85, 1.05, -20]);
+    const r = M.refineWordTimes([{ w: 'them', start: 0, end: 0.5 }, { w: 'the', start: 0.5, end: 1.05 }], envOf(2, spans));
+    assert.ok(Math.abs(r[1].start - 0.85) <= 0.011, 'the starts after the pause: ' + r[1].start);
+});
+
+test('refineWordTimes: a word said right before a hum keeps its start (it rises, it is not a tail)', () => {
+    // "and" burst 0.5-0.58 at -20 after a dip, then a hum at -32 to 1.5, then the next word's sound at -14
+    const r = M.refineWordTimes([{ w: 'communication', start: 0, end: 0.47 }, { w: 'and', start: 0.47, end: 1.55 }],
+        envOf(3, [[0, 0.45, -18], [0.45, 0.5, -30], [0.5, 0.58, -20], [0.58, 1.5, -32], [1.5, 1.7, -14]]));
+    assert.ok(r[1].start < 0.52, 'and stays on its burst: ' + r[1].start);
+});
+
+test('refineWordTimes: a first "s" (quiet overall, loud in the treble) is part of the word', () => {
+    // pause, "s" 0.40-0.55 at -40 dB (treble -45), vowel from 0.55 at -12
+    const env = envHf(1.5, [[0, 0.2, -16], [0.4, 0.55, -40], [0.55, 0.8, -12]], [[0.4, 0.55, -45], [0.55, 0.8, -50]]);
+    const r = M.refineWordTimes([{ w: 'to', start: 0, end: 0.2 }, { w: 'sell', start: 0.2, end: 0.8 }], env);
+    assert.ok(Math.abs(r[1].start - 0.4) <= 0.011, 'sell starts on its s: ' + r[1].start);
+});
+
+test('refineWordTimes: under a music bed close to the voice, a start does not jump onto a later part of the word', () => {
+    // bed at -32 +/- 3 everywhere, the word at -18 from 0.6 with a louder syllable at 0.9
+    const spans = [];
+    for (let i = 0; i < 300; i++) spans.push([i * 0.01, (i + 1) * 0.01, -32 + ((i * 7) % 7) - 3]);
+    spans.push([0.6, 0.9, -18], [0.9, 1.0, -12]);
+    const r = M.refineWordTimes([{ w: 'my', start: 0.6, end: 1.0 }], envOf(3, spans));
+    assert.ok(r[0].start <= 0.62, 'stays on the word: ' + r[0].start);
+});
+
+test('refineWordTimes: words keep their order and stay inside the window, measured or not', () => {
+    const env = envOf(1, [[0.1, 0.3, -18], [0.9, 1.0, -18]]);
+    const r = M.refineWordTimes([
+        { w: 'a', start: 0.1, end: 0.3 }, { w: 'ghost', start: 0.2, end: 0.25 }, { w: 'tail', start: 0.95, end: 1.3 }, { w: 'past', start: 0.99, end: 1.4 }
+    ], env);
+    for (let i = 1; i < r.length; i++) assert.ok(r[i].start > r[i - 1].start && r[i].start >= r[i - 1].end - 1e-9, JSON.stringify(r));
+    assert.ok(r[2].end <= 1.0 + 1e-9, 'a measured end stays in the window: ' + r[2].end);
+});

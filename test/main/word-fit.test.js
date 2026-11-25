@@ -136,8 +136,9 @@ test('rowWordFractions puts each MultiText row\'s words inside its own range, wh
     const rows = WF.rowWordFractions([{ key: '1', text: 'So yeah,' }, { key: '2', text: 'watch this' }], spoken);
     assert.deepStrictEqual(rows.map(r => r.key), ['1', '2']);
     assert.ok(rows.every(r => r.spoken));
-    // row 1 spans 2..14: "So" 2..8 -> 0..0.5, "yeah," 8..14 -> 0.5..1
-    assert.deepStrictEqual(rows[0].words.map(w => [w.label, +w.a.toFixed(2), +w.b.toFixed(2)]), [['So', 0, 0.5], ['yeah,', 0.5, 1]]);
+    // row 1 spans 2..14: "So" said 2..6 -> 0..0.33 (the pause 6..8 stays empty), "yeah," 8..14 -> 0.5..1
+    assert.deepStrictEqual(rows[0].words.map(w => [w.label, +w.a.toFixed(2), +w.b.toFixed(2)]), [['So', 0, 0.33], ['yeah,', 0.5, 1]]);
+    assert.strictEqual(rows[0].words[0].e, 6);
     // row 2 spans 30..50: "this" starts at 41
     assert.strictEqual(+rows[1].words[1].a.toFixed(2), 0.55);
     assert.strictEqual(rows[1].words[1].b, 1);
@@ -213,4 +214,17 @@ test('UK text matches a US transcript word one letter apart (stigmatised / stigm
     assert.equal(plan.start, 6);
     const short = WF.planAnimKeys({ a: 15, delay: 0.6, text: 'cat' }, [{ w: 'cut', start: 3, end: 6 }], 25);
     assert.equal(short.matched, 0);          // short words still need to be the same
+});
+
+test('a letter-by-letter word said before a pause is in when it is said, not spread over the pause', () => {
+    // "doing" said 3.5..7, a pause, "But" from 18.25: doing's last letter is in by 7, not at 18
+    const plan = WF.planAnimKeys({ a: 1, delay: 1, text: 'doing But I' }, [
+        { w: 'doing', start: 3.5, end: 7 }, { w: 'But', start: 18.25, end: 19.75 }, { w: 'I', start: 21, end: 23 }
+    ], 40);
+    const lastLetterOfDoing = WF.frameAtKeys(plan.keys, 4);       // letter 4 ("g") starts at own time 4
+    assert.ok(lastLetterOfDoing <= 7.01, 'doing is in by its spoken end: ' + lastLetterOfDoing);
+    assert.ok(Math.abs(WF.frameAtKeys(plan.keys, 6) - 18.25) < 0.01, 'But comes in when it is said');
+    // connected speech (no pause) keeps one key per word
+    const tight = WF.planAnimKeys({ a: 1, delay: 1, text: 'doing But' }, [{ w: 'doing', start: 3.5, end: 7 }, { w: 'But', start: 7.5, end: 9 }], 20);
+    assert.strictEqual(tight.keys.filter(k => k[0] < 7.5).length, 1);
 });

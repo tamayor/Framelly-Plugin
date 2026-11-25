@@ -388,7 +388,9 @@ async function spokenWordsFor(start, end, opts) {
     if (!inSpan.length) return { words: [], cached: false };
     let words, cached = true;
     if (opts && opts.cachedOnly) {
-        await MEDIA.refineCaches();         // older caches: word edges on the sound (once)
+        // older caches under the clip: word edges on the sound (the records this read may use)
+        await MEDIA.refineCaches({ timeline: { from: start, to: end, files: inSpan.map(s => s.file) } });
+        for (const seg of inSpan) await MEDIA.refineCaches({ file: seg.file });
         words = cachedSpanWords(media, segs, start, end, { fileFallback: true });
         if (!words) return { words: [], cached: false };
     } else {

@@ -387,7 +387,7 @@ async function snapChopCuts(out, args, warnings) {
     try { p = await MEDIA.findPauses(args.media, { start: Math.max(0, from - 1), duration: to - from + 2 }); }
     catch (e) { warnings.push('Cuts not moved onto pauses: ' + e.message); return null; }
     if (p.quiet) warnings.push('The recording is very quiet (speech around ' + p.speechDb + ' dBFS): pauses may be wrong.');
-    await MEDIA.refineCaches();
+    await MEDIA.refineCaches({ file: args.media, from, to });
     const words = MEDIA.cachedWords(args.media, from, to);
     let moved = 0, byWord = 0;
     for (let i = 0; i < out.length - 1; i++) {

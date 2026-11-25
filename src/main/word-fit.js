@@ -134,6 +134,15 @@ function planAnimKeys(term, spoken, length, opts) {
             if (f < last[0] + minStep) f = last[0] + minStep;
         }
         keys.push([f, v]);
+        // a word said before a pause: its letters are in when it is said, not spread over the pause up to the next
+        // word (the words' ends are on the sound now, with the pause between them)
+        if (j < tw.length - 1) {
+            const eAt = clampTo(al.times[j].end - lead, length);
+            const nextAt = clampTo(al.times[j + 1].start - lead, length);
+            const vE = D * Math.min(tw[j + 1].at - 0.1, tw[j].at + tw[j].w.length);
+            const last = keys[keys.length - 1];
+            if (eAt < nextAt - 1 && eAt > last[0] + minStep && vE > last[1]) keys.push([eAt, vE]);
+        }
     }
     // the last word's letters AND their own animation (A frames each: a blur or fade can be as long as the clip) are
     // done when the last word is said, not A frames of normal speed later, which ended where the slider did
@@ -252,11 +261,14 @@ function rowWordFractions(rows, spoken) {
                 key: r.key, spoken: true,
                 words: r.words.map((w, n) => {
                     const a = clamp01((t[n].start - s0) / span);
-                    // a word lasts to the next one's start (the row has no gaps of its own), the last one to the end
-                    const b = n + 1 < t.length ? clamp01((t[n + 1].start - s0) / span) : 1;
+                    // a word lasts to its spoken end (a pause after it stays empty), at the latest the next one's start;
+                    // the last one to the end of the row
+                    const next = n + 1 < t.length ? t[n + 1].start : null;
+                    const own = t[n].end > t[n].start ? t[n].end : next;
+                    const b = next !== null ? clamp01((Math.min(own, next) - s0) / span) : 1;
                     // s / e: where the word is said, in frames from the clip's start (the lane draws it there, on
                     // the audio under the clip, wherever the row's own range is)
-                    const s = t[n].start, e = n + 1 < t.length ? t[n + 1].start : Math.max(t[n].end, s + 0.5);
+                    const s = t[n].start, e = next !== null ? Math.min(own, next) : Math.max(t[n].end, s + 0.5);
                     return { label: w.w, a, b: Math.max(a, b), s: r2(s), e: r2(Math.max(s + 0.5, e)), matched: !!t[n].matched };
                 })
             };

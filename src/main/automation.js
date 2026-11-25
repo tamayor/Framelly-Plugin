@@ -381,8 +381,10 @@ const TOOLS = {
                 const r = await MEDIA.analyseTimeline('pauses', media, { audioTrack: args.audioTrack });
                 const seg = MEDIA.pickSegments('pauses', media, { audioTrack: args.audioTrack })[0];
                 // the timeline's own transcription first (frames already), else an older per-file one
-                await MEDIA.refineCaches();
-                const tlw = MEDIA.cachedTimelineWords(MEDIA.pickSegments('words', media, { audioTrack: args.audioTrack }), media.from, media.to);
+                const wsegs = MEDIA.pickSegments('words', media, { audioTrack: args.audioTrack });
+                await MEDIA.refineCaches({ timeline: { from: media.from, to: media.to, files: wsegs.map(x => x.file) } });
+                if (seg) await MEDIA.refineCaches({ file: seg.file });
+                const tlw = MEDIA.cachedTimelineWords(wsegs, media.from, media.to);
                 let words = tlw ? tlw.map(x => ({ start: x.start, end: x.end })) : null;
                 if (!words && seg) {
                     const m = MEDIA.sourceMapper(seg);
