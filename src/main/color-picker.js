@@ -24,7 +24,11 @@ function cancelNativeColor() {
     if (colorViaHelper && jxa) {
         try { fs.writeFileSync(COLOR_CANCEL_FILE, '1'); } catch (e) { /* ignore */ }
         const n = colorPickSeq;
-        setTimeout(() => { if (colorViaHelper && colorPickSeq === n) { stopJxaHelper(); setTimeout(startJxaHelper, 300); } }, 1500);
+        setTimeout(() => {
+            if (state.isQuitting || !colorViaHelper || colorPickSeq !== n) return;
+            stopJxaHelper();
+            setTimeout(() => { if (!state.isQuitting) startJxaHelper(); }, 300);
+        }, 1500);
     }
     return true;
 }
@@ -92,8 +96,10 @@ const JXA_HELPER = [
     // screen, the pick ended at once and the panel stayed up with nothing running it, so even its close button did
     // nothing). The pick ends only on: the close button (watched below), the app asking (cancel file), or the panel
     // being seen visible and then staying hidden for 0.5 s. Unseen after 1 s: it is put in front again.
-    "      var since = Date.now(), seen = false, hiddenAt = 0, refronted = false, why = '';",
+    "      var since = Date.now(), seen = false, hiddenAt = 0, refronted = false, why = '', hb = Date.now();",
     "      while (true) {",
+    // a heartbeat while the loop runs, so the app can tell a pick held still (no LIVE) from a helper that is stuck
+    "        if (Date.now() - hb > 1000) { hb = Date.now(); say('BEAT'); }",
     "        var vis = panel.isVisible;",
     "        if (vis) { seen = true; hiddenAt = 0; }",
     "        else if (seen) { if (!hiddenAt) hiddenAt = Date.now(); else if (Date.now() - hiddenAt > 500) { why = 'panel closed'; break; } }",
@@ -127,6 +133,7 @@ const JXA_HELPER = [
     "}"
 ].join('\n');
 let jxa = null, jxaReady = false, jxaWait = null, jxaBuf = '';
+const JXA_STALL_MS = 60000;        // generous: a drag in the colour wheel or the magnifier holds the helper's loop too
 function jxaLine(line) {
     line = line.trim(); if (!line) return;
     if (line === 'READY') { jxaReady = true; return; }
@@ -137,7 +144,8 @@ function jxaLine(line) {
     if (jxaWait) jxaWait(line);
 }
 function startJxaHelper() {
-    if (process.platform !== 'darwin' || jxa) return;
+    // quitting: no new helper (a pick stopped by before-quit retries 300 ms later and would open a panel mid-quit)
+    if (process.platform !== 'darwin' || jxa || state.isQuitting) return;
     try {
         ensureDirs();
         const file = path.join(APP_DATA_DIR, 'color-helper.js');
@@ -151,7 +159,20 @@ function startJxaHelper() {
         ch.stdin.on('error', () => { });
     } catch (e) { jxa = null; }
 }
-function stopJxaHelper() { try { if (jxa) jxa.kill('SIGTERM'); } catch (e) { /* ignore */ } jxa = null; jxaReady = false; }
+// The pick waiting on this helper is answered (cancelled) here: once jxa is dropped, its exit no longer reaches the
+// waiter, and an unanswered pick kept colorPanelOpen true (every later click 'busy') for the rest of the session.
+// A helper that does not go on SIGTERM (held in a nested AppKit loop) is killed outright 500 ms later.
+function stopJxaHelper() {
+    const w = jxaWait, ch = jxa;
+    jxaWait = null;
+    try { if (ch) ch.kill('SIGTERM'); } catch (e) { /* ignore */ }
+    if (ch) {
+        const t = setTimeout(() => { try { if (ch.exitCode === null && ch.signalCode === null) ch.kill('SIGKILL'); } catch (e) { /* ignore */ } }, 500);
+        if (t && t.unref) t.unref();
+    }
+    jxa = null; jxaReady = false;
+    if (w) w('CANCEL');
+}
 // resolves null when the helper cannot be used (caller falls back), otherwise {hex} / {cancelled}
 // Every colour box in the app opens this one Colors panel. A slow or crashed helper is waited for / restarted once, so
 // the other pickers (the "choose color" dialog, then the web picker) only appear when the helper cannot run at all.
@@ -159,18 +180,26 @@ function pickViaHelper(c, onLive, retried) {
     return new Promise((resolve) => {
         if (!jxa) startJxaHelper();
         const t0 = Date.now();
-        const retry = () => { stopJxaHelper(); if (retried) return resolve(null); setTimeout(() => pickViaHelper(c, onLive, true).then(resolve), 300); };
+        // quitting: no new helper and no fallback dialog, the pick just ends
+        const retry = () => { stopJxaHelper(); if (state.isQuitting) return resolve({ cancelled: true }); if (retried) return resolve(null); setTimeout(() => pickViaHelper(c, onLive, true).then(resolve), 300); };
         const go = () => {
             if (!jxa) return retry();
             if (!jxaReady) { if (Date.now() - t0 > 12000) return retry(); return setTimeout(go, 50); }
-            let shown = false, done = false;
-            const fin = (v) => { if (done) return; done = true; clearTimeout(st); jxaWait = null; resolve(v); };
+            let shown = false, done = false, lt = 0;
+            const fin = (v) => { if (done) return; done = true; clearTimeout(st); clearTimeout(lt); jxaWait = null; resolve(v); };
             const st = setTimeout(() => { if (!shown) { done = true; jxaWait = null; retry(); } }, 6000);
+            // Once the panel is up the helper beats every second (and sends LIVE on every change). Silent for
+            // JXA_STALL_MS: it is stuck, so the pick ends (the colour picked so far stays) and the helper is replaced.
+            const alive = () => {
+                clearTimeout(lt);
+                lt = setTimeout(() => { if (done) return; fin({ cancelled: true, shown: true }); stopJxaHelper(); }, JXA_STALL_MS);
+            };
             jxaWait = (line) => {
-                if (line === 'SHOWN') { shown = true; clearTimeout(st); return; }
+                if (line === 'SHOWN') { shown = true; clearTimeout(st); alive(); return; }
+                if (line === 'BEAT') { if (shown) alive(); return; }
                 if (line === 'CANCEL') { if (!shown) { done = true; clearTimeout(st); jxaWait = null; return retry(); } return fin({ cancelled: true, shown }); }
                 if (line.indexOf('ERR') === 0) { if (!shown) { done = true; clearTimeout(st); jxaWait = null; return retry(); } return fin({ cancelled: true, shown }); }
-                if (line.indexOf('LIVE ') === 0) { try { onLive && onLive(line.slice(5)); } catch (e) { /* ignore */ } return; }
+                if (line.indexOf('LIVE ') === 0) { if (shown) alive(); try { onLive && onLive(line.slice(5)); } catch (e) { /* ignore */ } return; }
                 if (line.indexOf('COLOR ') === 0) return fin({ rgb: line.slice(6) });
             };
             try { jxa.stdin.write('SHOW ' + c.join(' ') + '\n'); } catch (e) { done = true; clearTimeout(st); jxaWait = null; retry(); }
@@ -203,7 +232,7 @@ function pickNativeColor(event, hex) {
         const c = [0, 2, 4].map(i => parseInt(v.slice(i, i + 2), 16) * 257);
         const finishH = (r) => {
             colorPanelOpen = false; colorViaHelper = false;
-            try { if (state.mainWindow && !state.mainWindow.isDestroyed()) { state.mainWindow.show(); state.mainWindow.focus(); } } catch (e) { /* ignore */ }
+            try { if (!state.isQuitting && state.mainWindow && !state.mainWindow.isDestroyed()) { state.mainWindow.show(); state.mainWindow.focus(); } } catch (e) { /* ignore */ }
             if (r.cancelled) return resolve({ ok: true, cancelled: true });
             const p = String(r.rgb || '').split(',').map(x => Math.max(0, Math.min(255, Math.round(parseInt(x, 10) / 257))));
             if (p.length !== 3 || p.some(x => !Number.isFinite(x))) return resolve({ ok: false, error: 'Unexpected colour answer' });

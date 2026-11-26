@@ -106,6 +106,12 @@ async function initVersion() {
                 currentVersion = res.version;
                 el.textContent = currentVersion.startsWith('v') ? currentVersion : `v${currentVersion}`;
             }
+            // The installed copy updated itself from the code folder at this open (src/main/self-update.js).
+            const up = res && res.selfUpdate;
+            if (up) {
+                const n = up.changed + up.removed;
+                setStatus('Updated from the code folder: ' + n + (n === 1 ? ' file' : ' files'), 'ok');
+            }
         } catch (e) {
             console.warn('Could not load version:', e);
         }

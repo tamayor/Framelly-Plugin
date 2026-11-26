@@ -1296,6 +1296,16 @@ def op_controls_set(a):
         raise RuntimeError("This clip has none of those controls")
     comp.Lock()
     try:
+        # Justified Pop's Highlight Color is the Template's Text+ element 2 colour (Red2 / Green2 / Blue2). While that
+        # element is off, a placed clip keeps the colour as a stale "Number" and SetInput is silently ignored (it still
+        # returns True). The Template is never rendered, so switching the element on changes nothing on screen.
+        if kinetic_template(comp)[0] is not None and attrs(tool).get("TOOLS_Name") == "Template":
+            for n in sorted({int(m.group(2)) for m in (re.match(r"^(Red|Green|Blue)(\d)$", str(i)) for i in ids) if m}):
+                if n > 1 and get_in(tool, "Enabled%d" % n) is not None and num(get_in(tool, "Enabled%d" % n), 0) < 0.5:
+                    try:
+                        tool.SetInput("Enabled%d" % n, 1)
+                    except Exception:
+                        pass
         for i, v in vals.items():
             try:
                 tool.SetInput(str(i), float(v))
@@ -3415,11 +3425,71 @@ def row_text(mt, n):
     return txt if isinstance(txt, str) else None
 
 
+def jp_split(txt):
+    """Justified Pop's Template text -> (upper, emphasis, lower), the same split as the preset's layout expression
+    (tools/gen-justified-pop.py): line 1 / 2 / 3+ with line breaks, else the *starred* words, else the middle third."""
+    txt = str(txt or "")
+    up, em, lo = [], [], []
+    if "\n" in txt or "\r" in txt:
+        ls = [z.strip() for z in re.split(r"[\r\n]+", txt) if z.strip()]
+        if len(ls) == 1:
+            em = ls[0].split()
+        elif ls:
+            up, em = ls[0].split(), ls[1].split()
+            for z in ls[2:]:
+                lo += z.split()
+    elif "*" in txt:
+        m = re.match(r"^(.*?)\*(.*?)\*(.*)$", txt, re.S)
+        if m:
+            up, em, lo = m.group(1).split(), m.group(2).split(), m.group(3).split()
+        else:
+            em = txt.split()
+    else:
+        ws = txt.split()
+        n = len(ws)
+        if n <= 2:
+            em = ws
+        else:
+            ne = max(1, int(math.floor(n / 3.0 + 0.5)))
+            s0 = (n - ne) // 2
+            up, em, lo = ws[:s0], ws[s0:s0 + ne], ws[s0 + ne:]
+    if not em:
+        if up:
+            em, up = up, []
+        elif lo:
+            em, lo = lo, []
+    clean = lambda ws: " ".join(w.replace("*", "") for w in ws if w.replace("*", ""))
+    return clean(up), clean(em), clean(lo)
+
+
+def jp_rows_set(comp, tpl, a):
+    """mt_rows_set on a Justified Pop clip: rows 1 / 2 / 3 (upper / emphasis / lower) become one starred text on the
+    plain Template, then the word Text+ are re-baked (bake_rows through rekey_comp)."""
+    t = {str(k): str(v) for k, v in (a.get("texts") or {}).items()}
+    u0, e0, l0 = jp_split(get_in(tpl, "StyledText"))
+    u, e, l = (" ".join(t.get(k, d).split()) for k, d in (("1", u0), ("2", e0), ("3", l0)))
+    text = " ".join(x for x in (u, "*%s*" % e if e else "", l) if x)
+    with LOCKED(comp):
+        tpl.SetInput("StyledText", text)
+    try:
+        rekey_comp(comp, a.get("item"))
+    except Exception:
+        pass
+    glass_after(a)
+    return {"set": [int(k) for k in t if k in ("1", "2", "3")], "segLead": False}
+
+
 def op_mt_rows_get(a):
     """The panel's Upper / Emphasize / Lower splitter on a placed clip: {item} -> {rows: [{n, name, text}]}."""
     comp = get_comp(a["item"], a.get("comp"))
     mt = multitext_tool(comp)
     if mt is None:
+        tpl, kind = kinetic_template(comp)
+        if kind == "justpop":
+            u, e, l = jp_split(get_in(tpl, "StyledText"))
+            return {"rows": [{"n": 1, "seg": None, "name": "Upper", "text": u},
+                             {"n": 2, "seg": None, "name": "Emphasis", "text": e},
+                             {"n": 3, "seg": None, "name": "Lower", "text": l}]}
         return {"rows": []}
     rows = []
     # seg: the Seg<n> range that animates this layer (the timing card's lane key), when the clip has row ranges
@@ -3439,6 +3509,9 @@ def op_mt_rows_set(a):
     comp = get_comp(a["item"], a.get("comp"))
     mt = multitext_tool(comp)
     if mt is None:
+        tpl, kind = kinetic_template(comp)
+        if kind == "justpop":
+            return jp_rows_set(comp, tpl, a)
         raise RuntimeError("This clip has no MultiText")
     done = []
     with LOCKED(comp):
@@ -3801,8 +3874,12 @@ def op_word_fit_set(a):
         if si and get_in(tool, si) is not None:
             tool.SetInput(si, max(0, int(round(num(a.get("start"), 0)))))
         tool.SetInput(inp, max(1, int(round(num(a.get("end"), 1)))))
+    # the re-key in one lock: the clip is already placed and rendering, so its key changes must not each start a
+    # re-evaluation while Fusion's render threads read the comp. The wake stays outside it (wakeLock decides that:
+    # whether a locked wake still wakes a blank title is not confirmed)
     if target == "step":
-        key_kinetic(comp)        # the rows / words re-keyed through the fit (remap_tt)
+        with LOCKED(comp):
+            key_kinetic(comp)        # the rows / words re-keyed through the fit (remap_tt)
     if a.get("wake", True):
         wake_effects(comp)
     glass_after(a)
@@ -5910,6 +5987,33 @@ OPS = {"markers_clear": op_markers_clear, "timeline_frames": op_timeline_frames,
 # Operations run a second time when the first attempt fails quickly (a stale handle, Resolve mid-update). Not the
 # renders (they already took their time, the panel retries itself), not the watchers (the next tick comes anyway), and
 # never once a wake has run (a second attempt would wake - re-render - the whole comp again).
+# Ops that never touch a timeline: no timeline check before them (tl_switch_check).
+TL_FREE = {"ping", "config", "fonts"}
+_tl_id = [None]     # unique id of the timeline the item caches were filled on
+
+
+def tl_switch_check(op):
+    """After a timeline switch the cached clip handles (_items, _audio_items) still answer, but belong to the old
+    timeline: a late or queued request would write to it, or mix its clips with the new timeline (glass_sync,
+    link_clips). Every cache keyed by clip id is dropped when the current timeline is a different one."""
+    if op in TL_FREE:
+        return
+    try:
+        cur = str(timeline().GetUniqueId() or "")
+    except Exception:
+        return
+    if not cur or cur == _tl_id[0]:
+        return
+    if _tl_id[0] is not None:
+        _items.clear()
+        _audio_items.clear()
+        _seg_seen.clear()
+        _glass_kind.clear()
+        _glass_seen.clear()
+        comp_attrs_forget()
+    _tl_id[0] = cur
+
+
 NO_RETRY = {"timeline_frames", "cut_transcribe", "cut_subtitles", "track_frames", "spot_place", "spot_remove", "capture", "live_frame", "probe_render", "seg_watch", "seg_sweep", "ping", "config", "fonts"}
 
 
@@ -5925,6 +6029,7 @@ def handle(req):
     WAKE_RAN[0] = False
     MUTATED[0] = False
     out = None
+    tl_switch_check(op)
     attempts = (2,) if op in NO_RETRY else (1, 2)
     for attempt in attempts:
         req_cache_clear()

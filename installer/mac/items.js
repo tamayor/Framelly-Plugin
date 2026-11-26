@@ -73,18 +73,32 @@ function pathFiles(ctx) {
 }
 function stalePrefixes(text, ctx) {
     const found = new Set();
-    const names = [E.DATA_FOLDER_NAME, E.OLD_DATA_FOLDER_NAME, E.CODE_FOLDER_NAME, E.OLD_CODE_FOLDER_NAME];
+    const names = [...new Set([E.DATA_FOLDER_NAME, ...E.OLD_DATA_FOLDER_NAMES, E.CODE_FOLDER_NAME, ...E.OLD_CODE_FOLDER_NAMES])];
     const re = new RegExp('"(/[^"\\\\\\n]+?)/(' + names.join('|') + ')(?=[/"])', 'g');
     let m;
     while ((m = re.exec(text))) { const dir = m[1] + '/' + m[2]; if (dir !== ctx.dataDir && dir !== ctx.codeDir && !E.exists(dir)) found.add(m[1]); }
     return [...found];
 }
 // Every path under the old main folder `p`, pointed to this one: its data folder, its code folder, then the rest.
+// The old main folder may be a general one (the Desktop): the rest only moves when the file is gone there and is here.
+const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 function movedPaths(text, p, ctx) {
     const swap = (names, to) => { for (const n of names) for (const end of ['/', '"']) text = text.split('"' + p + '/' + n + end).join('"' + to + end); };
-    swap([E.DATA_FOLDER_NAME, E.OLD_DATA_FOLDER_NAME], ctx.dataDir);
-    swap([E.CODE_FOLDER_NAME, E.OLD_CODE_FOLDER_NAME], ctx.codeDir);
-    return text.split('"' + p + '/').join('"' + ctx.mainDir + '/');
+    swap([E.DATA_FOLDER_NAME, ...E.OLD_DATA_FOLDER_NAMES.filter(n => n !== E.CODE_FOLDER_NAME)], ctx.dataDir);
+    swap(E.OLD_CODE_FOLDER_NAMES, ctx.codeDir);
+    // "Framelly" was the data folder until 2026-11-26 and is the code folder now: each path goes to the one that has
+    // the file, the data folder when neither does (the old layout).
+    const both = new RegExp('"' + esc(p + '/' + E.CODE_FOLDER_NAME) + '(/[^"\\\\\\n]*)?"', 'g');
+    text = text.replace(both, (m, rest) => {
+        const r = rest || '';
+        const to = r && !E.exists(ctx.dataDir + r) && E.exists(ctx.codeDir + r) ? ctx.codeDir : ctx.dataDir;
+        return '"' + to + r + '"';
+    });
+    const rest = new RegExp('"' + esc(p) + '/([^"\\\\\\n]+)"', 'g');
+    return text.replace(rest, (m, rel) => {
+        const to = ctx.mainDir + '/' + rel;
+        return !E.exists(p + '/' + rel) && E.exists(to) ? '"' + to + '"' : m;
+    });
 }
 function scanPaths(ctx) {
     const hits = [];
@@ -116,7 +130,8 @@ function installPaths(ctx, log) {
 // ------------------------------------------------------------------ Claude Code
 function mcpScript(ctx) { return path.join(ctx.codeDir, 'mcp', 'framelly-mcp.js'); }
 // Every registration of the server in ~/.claude.json: the user-wide one and one per project folder. Entries under the
-// server's earlier name (el-subtitle-animator, el-sa-mcp.js) are listed too, so they are replaced.
+// server's earlier name (el-subtitle-animator, el-sa-mcp.js) are listed too, so they are replaced. A project entry
+// whose folder is gone is left out: `claude mcp remove` cannot reach it, and it never starts.
 function mcpEntries() {
     const cfg = E.readJson(path.join(E.HOME, '.claude.json'), {}) || {};
     const list = [];
@@ -127,7 +142,7 @@ function mcpEntries() {
         }
     };
     add('user', null, cfg.mcpServers);
-    for (const [dir, p] of Object.entries(cfg.projects || {})) add('local', dir, p && p.mcpServers);
+    for (const [dir, p] of Object.entries(cfg.projects || {})) if (E.exists(dir)) add('local', dir, p && p.mcpServers);
     return list;
 }
 function detectMcp(ctx) {
@@ -144,7 +159,6 @@ async function installMcp(ctx, log) {
     const env = E.toolEnv();
     const want = mcpScript(ctx);
     for (const e of mcpEntries().filter(x => x.name !== E.MCP_NAME || x.script !== want)) {
-        if (e.scope === 'local' && !E.exists(e.project)) { log('Skipped an old entry of a folder that is gone: ' + e.project); continue; }
         log('Removing the old entry (' + (e.project || 'all projects') + ')');
         await run(claude, ['mcp', 'remove', e.name, '-s', e.scope], { env, cwd: e.project || E.HOME });
     }
@@ -184,10 +198,16 @@ function installSkills(ctx, log) {
         let text;
         // A skill that is already there (under this name, or an earlier one) keeps the user's edits: only the path to
         // job-prompt.md and the names change.
+        // One whose path to job-prompt.md was taken out gets the template again; the user's text stays in SKILL.md.bak.
         const keep = [file, ...oldFiles].find(E.exists);
-        if (keep) text = renamed(fs.readFileSync(keep, 'utf8')).replace(PROMPT_PATH, () => '`' + jobPrompt(ctx) + '`');
-        else text = fs.readFileSync(path.join(SKILL_TEMPLATES, name, 'SKILL.md'), 'utf8').split('{{JOB_PROMPT}}').join(jobPrompt(ctx));
+        const kept = keep ? fs.readFileSync(keep, 'utf8') : null;
         fs.mkdirSync(path.dirname(file), { recursive: true });
+        if (kept !== null && kept.search(PROMPT_PATH) >= 0) text = renamed(kept).replace(PROMPT_PATH, () => '`' + jobPrompt(ctx) + '`');
+        else text = fs.readFileSync(path.join(SKILL_TEMPLATES, name, 'SKILL.md'), 'utf8').split('{{JOB_PROMPT}}').join(jobPrompt(ctx));
+        if (kept !== null && kept.search(PROMPT_PATH) < 0) {
+            fs.writeFileSync(file + '.bak', kept, 'utf8');
+            log('/' + name + ' had no path to job-prompt.md: your copy is in ' + file + '.bak');
+        }
         fs.writeFileSync(file, text, 'utf8');
         for (const old of oldFiles) {
             if (!E.exists(old)) continue;
@@ -283,10 +303,14 @@ async function detectPillow() {
     for (const py of PILLOW_PYTHONS) if (await hasModules(py, ['PIL'])) return { state: 'ok', note: 'Installed (' + py + ')' };
     return needsPython() || { state: 'missing', note: 'Not installed' };
 }
+// Homebrew's Python: /opt/homebrew on Apple silicon, a link into /usr/local/Cellar on Intel.
+function isBrewPython(py) {
+    try { return !!py && /\/Cellar\/|^\/opt\/homebrew\//.test(fs.realpathSync(py)); } catch (e) { return false; }
+}
 async function installPillow(ctx, log) {
     // Homebrew's Python does not take pip installs: its Pillow comes from Homebrew. Other Pythons take a user install.
     const brew = E.findTool('brew');
-    if (brew && E.exists('/opt/homebrew/bin/python3')) {
+    if (brew && isBrewPython(E.systemPython())) {
         await must(run(brew, ['install', 'pillow'], { env: { ...E.toolEnv(), HOMEBREW_NO_AUTO_UPDATE: '1', HOMEBREW_NO_ENV_HINTS: '1' } }, (l) => log(l.slice(0, 140))), 'brew install pillow failed');
     } else {
         const py = E.systemPython();
@@ -354,4 +378,4 @@ const ITEMS = [
         detect: detectBroll, install: installBroll },
 ];
 
-module.exports = { ITEMS };
+module.exports = { ITEMS, movedPaths, stalePrefixes, mcpEntries, isBrewPython, installSkills, detectSkills };

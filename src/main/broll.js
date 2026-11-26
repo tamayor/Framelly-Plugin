@@ -23,7 +23,7 @@ module.exports = {
     brollStatus, brollCancel, brollOpenFolder, brollFinalize, draftScale, brollShutdown, brollSuggestFromTexts, brollFrame, brollStrip, brollTrace, brollSync, brollLandingPlan, brollFromPlayhead, findWordHit, brollWordLane,
     brollVibeProps, brollRestyle, adjustRange,
     // for the Collage pane (collage.js): the same warm renderer, timeline and placement
-    renderJob, findNode, brollDir, currentTl, placeFile
+    renderJob, findNode, brollDir, currentTl, placeFile, putBack, claimTimeline
 };
 
 const fs = require('fs');
@@ -37,7 +37,7 @@ const { APP_DATA_DIR, APP_ROOT, DATA_DIR } = require('./config');
 const { dlog } = require('./log');
 const { findItemsByIds, getProject, getSubtitles, tcToFrame, timelineMeta } = require('./resolve');
 const { projectOutDir } = require('./sfx-import');
-const { CODE_FOLDER_NAME, OLD_CODE_FOLDER_NAME, sameName } = require('./names');
+const { CODE_FOLDER_NAME, OLD_CODE_FOLDER_NAMES, sameName } = require('./names');
 const { pickTrack } = require('./placement');
 const { bridgeCall } = require('./fusion-bridge');
 const { vibeArgs, applyVibe, vibeList } = require('./broll-vibe');
@@ -48,13 +48,14 @@ const PREFS_FILE = path.join(APP_DATA_DIR, 'broll.json');
 const PREVIEW_DIR = path.join(APP_DATA_DIR, 'broll-previews');
 const IDLE_MS = 10 * 60 * 1000;          // the worker quits after 10 idle minutes
 const JOB_TIMEOUT_MS = 6 * 60 * 1000;
+const READY_TIMEOUT_MS = 3 * 60 * 1000;  // a worker that starts but never says READY (a first cold bundle is slow)
 
 // The Remotion project: beside the code. The installed plugin finds the repo through data-location.json (codeDir).
 function brollDir() {
     const tries = [];
     try { const loc = JSON.parse(fs.readFileSync(path.join(APP_ROOT, 'data-location.json'), 'utf8')); if (loc.codeDir) tries.push(path.join(loc.codeDir, 'broll')); } catch (e) { /* running from the repo */ }
     tries.push(path.join(APP_ROOT, 'broll'));
-    if (DATA_DIR) for (const n of [CODE_FOLDER_NAME, OLD_CODE_FOLDER_NAME]) tries.push(path.join(path.dirname(DATA_DIR), n, 'broll'));
+    if (DATA_DIR) for (const n of [CODE_FOLDER_NAME, ...OLD_CODE_FOLDER_NAMES]) tries.push(path.join(path.dirname(DATA_DIR), n, 'broll'));
     return tries.find(d => fs.existsSync(path.join(d, 'render.mjs'))) || tries[0];
 }
 
@@ -279,7 +280,14 @@ function armIdle(w) {
 async function renderJob(job, onProgress, timeoutMs) {
     const w = startWorker();
     clearTimeout(w.idle);
-    await w.ready;
+    let readyTo;
+    try {
+        await Promise.race([w.ready, new Promise((res, rej) => { readyTo = setTimeout(() => rej(new Error('The B-roll renderer did not start')), READY_TIMEOUT_MS); })]);
+    } catch (e) {
+        if (worker === w) worker = null;
+        try { w.proc.kill(); } catch (k) { /* gone */ }
+        throw e;
+    } finally { clearTimeout(readyTo); }
     const id = job.id || crypto.randomBytes(5).toString('hex');
     const limit = Math.max(JOB_TIMEOUT_MS, Number(timeoutMs) || 0);
     return new Promise((resolve, reject) => {
@@ -600,21 +608,33 @@ async function brollPlace(event, o, gen) {
     }
     current = { phase: 'place', effect: e.id, text: 'Placing ' + label + '…' };
     send(current);
-    const tlNow = await project.GetCurrentTimeline();
-    if (!tlNow || (await tlNow.GetName()) !== tlName) throw new Error('The timeline changed while rendering; the file is in ' + dir);
-    const placed = await placeFile(project, tlNow, out, r.start, r.frames, Number(o.track) || 0, draft);
-    placed.notes.push(...footNotes);
-    const rec = {
-        id: uid, effect: e.id, name: e.name, props, timeline: tlName, start: r.start, frames: r.frames, fps: meta.fps,
-        width: meta.width, height: meta.height, file: out, version: 1, itemId: placed.itemId, track: placed.track,
-        subtitle: r.subtitle, marks: r.marks || undefined, extend: extendF || undefined, draft: draft || undefined, created: new Date().toISOString()
-    };
-    if (!updatePlaced(all => { all.push(rec); })) placed.notes.push(NOT_SAVED);
+    await claimTimeline();
+    let placed, rec;
+    try {
+        const tlNow = await project.GetCurrentTimeline();
+        if (!tlNow || (await tlNow.GetName()) !== tlName) throw new Error('The timeline changed while rendering; the file is in ' + dir);
+        placed = await placeFile(project, tlNow, out, r.start, r.frames, Number(o.track) || 0, draft);
+        placed.notes.push(...footNotes);
+        rec = {
+            id: uid, effect: e.id, name: e.name, props, timeline: tlName, start: r.start, frames: r.frames, fps: meta.fps,
+            width: meta.width, height: meta.height, file: out, version: 1, itemId: placed.itemId, track: placed.track,
+            subtitle: r.subtitle, marks: r.marks || undefined, extend: extendF || undefined, draft: draft || undefined, created: new Date().toISOString()
+        };
+        if (!updatePlaced(all => { all.push(rec); })) placed.notes.push(NOT_SAVED);
+    } finally { state.applying = false; }
     const sec = ((Date.now() - t0) / 1000).toFixed(1);
     current = { phase: 'done', effect: e.id, id: uid, text: label + ' on ' + placed.track + ' (' + sec + ' s)' + (draft ? ' · half size: Finalize before export' : '') + (placed.notes.length ? ' · ' + placed.notes.join('; ') : '') };
     send({ ...current, placed: rec });
     dlog('BROLL-PLACED', e.id, uid, placed.track, r.start, r.frames, sec + 's');
     return { ...rec, notes: placed.notes, seconds: Number(sec), landed: landed || undefined };
+}
+
+// The timeline lock (state.applying) for a B-roll / Collage edit in Resolve, so a subtitle Apply, the timing polls and
+// the row sounds stand down meanwhile (timeline-snapshot.js relies on it). Waits a moment for another holder; the
+// caller clears it in a finally. Renders stay outside the lock.
+async function claimTimeline() {
+    if (state.applying && !(await require('./live-preview').waitIdle(6000))) throw new Error('Resolve is busy placing something: try again in a moment');
+    state.applying = true;
 }
 
 async function placeFile(project, tl, file, start, frames, wantedTrack, draft) {
@@ -627,6 +647,25 @@ async function placeFile(project, tl, file, start, frames, wantedTrack, draft) {
     try { itemId = String(await v[0].GetUniqueId()); } catch (e) { /* adjust falls back to the file name */ }
     await markDraft(v[0], draft);
     return { itemId, track: 'V' + vt, notes };
+}
+
+// After a failed re-place: the deleted clip goes back at its old frames on its old track, from its Media Pool item
+// (or its file). -> { itemId, track } or null when that failed too (the record then keeps the old id).
+async function putBack(project, tl, mpi, file, start, frames, track, draft) {
+    try {
+        if (mpi) {
+            const mp = await project.GetMediaPool();
+            const v = await mp.AppendToTimeline([{ mediaPoolItem: mpi, mediaType: 1, trackIndex: track, recordFrame: start, startFrame: 0, endFrame: frames }]);
+            if (v && v[0]) {
+                let itemId = null;
+                try { itemId = String(await v[0].GetUniqueId()); } catch (e) { /* adjust falls back to the file name */ }
+                await markDraft(v[0], draft);
+                return { itemId, track: 'V' + track };
+            }
+        }
+        if (file && fs.existsSync(file)) { const r = await placeFile(project, tl, file, start, frames, track, draft); return { itemId: r.itemId, track: r.track }; }
+    } catch (e) { dlog('BROLL-PUTBACK-FAIL', String(e.message || e)); }
+    return null;
 }
 
 // Several in a row (the tab's "Place ticked", suggest_broll's result). One at a time, so Resolve stays responsive.
@@ -740,36 +779,49 @@ async function brollAdjust(event, o, gen) {
     let how;
     const oldFile = rec.file, wasDraft = !!rec.draft;
     let oldMpi = null;
-    if (frames === Number(curDur) && e.id === rec.effect && newStart === Number(curStart)) {
-        // same length: swap the media under the clip; it keeps its place, track and transform
-        const mpi = await item.GetMediaPoolItem();
-        const ok = mpi && await mpi.ReplaceClip(out);
-        if (!ok) throw new Error('Resolve could not swap the media (ReplaceClip). The new render is ' + out);
-        await markDraft(item, draft);
-        how = 'replaced';
-    } else {
-        // new length or effect: a new clip in the old one's place
-        try { oldMpi = await item.GetMediaPoolItem(); } catch (err) { /* only for the draft clean-up below */ }
-        const trackInfo = await item.GetTrackTypeAndIndex();
-        const track = Array.isArray(trackInfo) ? Number(trackInfo[1]) : 0;
-        await tl.DeleteClips([item], false);
-        const placed = await placeFile(project, tl, out, newStart, frames, track, draft);
-        rec.itemId = placed.itemId; rec.track = placed.track;
-        how = 'replaced with a new clip (' + (newStart !== Number(curStart) ? 'moved' : frames !== Number(curDur) ? 'new length' : 'new effect') + ')';
-    }
-    Object.assign(rec, { effect: e.id, name: e.name, props, file: out, version: v, frames, start: newStart, draft: draft || undefined, updated: new Date().toISOString() });
     const notes = [...footNotes];
-    // the list as it is now (a placement or removal may have saved it during the render): only this record changes
-    if (!updatePlaced(list => { const k = list.findIndex(r => r.id === rec.id); if (k >= 0) list[k] = rec; else list.push(rec); })) notes.push(NOT_SAVED);
-    saveLast(e.id, props);
-    // A replaced draft is throwaway (live updates make one per change): drop its file, and its Media Pool item when
-    // the clip went in as a new one. Full-size files are kept (undo / other timelines).
-    if (wasDraft && oldFile && oldFile !== out) {
-        try { if (oldMpi) await project.GetMediaPool().DeleteClips([oldMpi]); } catch (err) { /* stays in the bin */ }
-        try { fs.rmSync(oldFile, { force: true }); } catch (err) { /* keep it */ }
-    }
-    // live: Resolve's viewer keeps the old picture until the playhead moves; set it where it is to redraw
-    if (o.live) { try { const tc = await tl.GetCurrentTimecode(); if (tc) await tl.SetCurrentTimecode(tc); } catch (err) { /* only a redraw */ } }
+    await claimTimeline();
+    try {
+        // the render can take minutes: the clip goes back only on the timeline it was read from
+        const tlNow = await project.GetCurrentTimeline();
+        if (!tlNow || (await tlNow.GetName()) !== rec.timeline) throw new Error('The timeline changed while rendering; the new file is ' + out);
+        if (frames === Number(curDur) && e.id === rec.effect && newStart === Number(curStart)) {
+            // same length: swap the media under the clip; it keeps its place, track and transform
+            const mpi = await item.GetMediaPoolItem();
+            const ok = mpi && await mpi.ReplaceClip(out);
+            if (!ok) throw new Error('Resolve could not swap the media (ReplaceClip). The new render is ' + out);
+            await markDraft(item, draft);
+            how = 'replaced';
+        } else {
+            // new length or effect: a new clip in the old one's place
+            try { oldMpi = await item.GetMediaPoolItem(); } catch (err) { /* only for the draft clean-up below */ }
+            const trackInfo = await item.GetTrackTypeAndIndex();
+            const track = Array.isArray(trackInfo) ? Number(trackInfo[1]) : 0;
+            await tl.DeleteClips([item], false);
+            let placed;
+            try { placed = await placeFile(project, tl, out, newStart, frames, track, draft); }
+            catch (err) {
+                // the old clip is gone: put it back where it was, so the B-roll does not vanish, and record its new id
+                const back = await putBack(project, tl, oldMpi, oldFile, Number(curStart), Number(curDur), track, wasDraft);
+                if (back) updatePlaced(list => { const k = list.findIndex(r => r.id === rec.id); if (k >= 0) { list[k].itemId = back.itemId; list[k].track = back.track; } });
+                throw err;
+            }
+            rec.itemId = placed.itemId; rec.track = placed.track;
+            how = 'replaced with a new clip (' + (newStart !== Number(curStart) ? 'moved' : frames !== Number(curDur) ? 'new length' : 'new effect') + ')';
+        }
+        Object.assign(rec, { effect: e.id, name: e.name, props, file: out, version: v, frames, start: newStart, draft: draft || undefined, updated: new Date().toISOString() });
+        // the list as it is now (a placement or removal may have saved it during the render): only this record changes
+        if (!updatePlaced(list => { const k = list.findIndex(r => r.id === rec.id); if (k >= 0) list[k] = rec; else list.push(rec); })) notes.push(NOT_SAVED);
+        saveLast(e.id, props);
+        // A replaced draft is throwaway (live updates make one per change): drop its file, and its Media Pool item when
+        // the clip went in as a new one. Full-size files are kept (undo / other timelines).
+        if (wasDraft && oldFile && oldFile !== out) {
+            try { if (oldMpi) await project.GetMediaPool().DeleteClips([oldMpi]); } catch (err) { /* stays in the bin */ }
+            try { fs.rmSync(oldFile, { force: true }); } catch (err) { /* keep it */ }
+        }
+        // live: Resolve's viewer keeps the old picture until the playhead moves; set it where it is to redraw
+        if (o.live) { try { const tc = await tl.GetCurrentTimecode(); if (tc) await tl.SetCurrentTimecode(tc); } catch (err) { /* only a redraw */ } }
+    } finally { state.applying = false; }
     const sec = ((Date.now() - t0) / 1000).toFixed(1);
     const what = rec.draft ? ' (draft)' : o.draft === false ? ' finalized at full size' : ' updated';
     current = { phase: 'done', effect: e.id, id: rec.id, text: e.name + what + ' (' + how + ', ' + sec + ' s)' };
@@ -821,14 +873,16 @@ async function brollRemove(event, o) {
     const all = readJson(PLACED_FILE, []);
     const i = findRec(all, id);
     const rec = all[i];
-    let removed = false;
+    let removed = false, it = null, tl = null;
     try {
-        const { tl, name } = await currentTl();
-        if (name === rec.timeline && rec.itemId) {
-            const it = (await findItemsByIds(tl, [rec.itemId], 'video')).get(rec.itemId);
-            if (it) removed = !!(await tl.DeleteClips([it], false));
-        }
+        const cur = await currentTl();
+        tl = cur.tl;
+        if (cur.name === rec.timeline && rec.itemId) it = (await findItemsByIds(tl, [rec.itemId], 'video')).get(rec.itemId) || null;
     } catch (e) { /* not on this timeline */ }
+    if (it) {
+        await claimTimeline();     // busy: throws, and the record is kept
+        try { removed = !!(await tl.DeleteClips([it], false)); } catch (e) { /* forgotten below */ } finally { state.applying = false; }
+    }
     updatePlaced(list => { const k = list.findIndex(r => r.id === rec.id); if (k >= 0) list.splice(k, 1); });
     return { removed, id: rec.id, note: removed ? undefined : 'Forgotten; the clip was not on the open timeline.' };
 }
@@ -1085,7 +1139,9 @@ async function brollSync(event, o) {
             const [s, d] = await Promise.all([it.GetStart(), it.GetDuration()]);
             const start = Number(s), end = Number(s) + Number(d);
             const plan = await brollLandingPlan(tl, meta, rec.effect, { ...rec.props, _manual: false }, start, end, rec.subtitle && rec.subtitle.index);
-            const sameTimes = JSON.stringify(rec.props._times || null) === JSON.stringify(plan.times || null);
+            // no per-word times is saved as [] (Sync clears old ones that way): the same as none
+            const norm = (t) => (Array.isArray(t) && t.length ? t : null);
+            const sameTimes = JSON.stringify(norm(rec.props._times)) === JSON.stringify(norm(plan.times));
             if (plan.start === start && plan.end === end && Number(rec.props.settle) === plan.settle && sameTimes) {
                 out.push({ id: rec.id, ok: true, unchanged: true, word: plan.word, source: plan.source });
                 continue;
@@ -1134,7 +1190,7 @@ async function brollFromPlayhead(event, o) {
 async function brollSuggest(event, o) {
     o = o || {};
     const reg = registry();
-    const { tl, meta } = await currentTl();
+    const { tl, meta, name } = await currentTl();
     let subs = await getSubtitles(tl, false);
     if (o.from || o.to) subs = subs.filter(s => s.index >= (Number(o.from) || 1) && s.index <= (Number(o.to) || Infinity));
     if (o.marks) {
@@ -1142,7 +1198,7 @@ async function brollSuggest(event, o) {
         if (!m) throw new Error('Set a Mark In and a Mark Out on the timeline first (I and O in Resolve)');
         subs = subs.filter(s => s.end > m.start && s.start < m.end);
     }
-    const taken = new Set(readJson(PLACED_FILE, []).filter(r => r.subtitle).map(r => r.subtitle.index));
+    const taken = new Set(readJson(PLACED_FILE, []).filter(r => r.subtitle && r.timeline === name).map(r => r.subtitle.index));
     if (o.skipPlaced !== false) subs = subs.filter(s => !taken.has(s.index));
     const list = brollSuggestFromTexts(subs.map(s => ({ index: s.index, text: s.text, start: s.start, end: s.end })), o, reg, meta.fps);
     return { subtitles: subs.length, suggestions: list,

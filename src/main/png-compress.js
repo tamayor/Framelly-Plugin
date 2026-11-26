@@ -111,6 +111,7 @@ function chunk(type, data) {
 
 // Re-encodes one PNG in place (written to a temp file, then renamed over the original). Returns bytes saved.
 async function compressPng(file) {
+    const before = fs.statSync(file);
     const buf = fs.readFileSync(file);
     const png = parse(buf);
     if (!png || png.interlace || png.depth < 8 || !CHANNELS[png.color]) return 0;
@@ -127,8 +128,15 @@ async function compressPng(file) {
     }
     const next = Buffer.concat(parts);
     if (next.length >= buf.length) return 0;
+    // a new preview can replace the file while it is being encoded: then the old pixels must not go over it
+    const same = (st) => st && st.ino === before.ino && st.size === before.size && st.mtimeMs === before.mtimeMs;
+    let now = null;
+    try { now = fs.statSync(file); } catch (e) { /* gone */ }
+    if (!same(now)) return 0;
     const tmp = file + '.tmp' + process.pid;
     fs.writeFileSync(tmp, next);
+    try { now = fs.statSync(file); } catch (e) { now = null; }
+    if (!same(now)) { try { fs.unlinkSync(tmp); } catch (e) { /* ignore */ } return 0; }
     fs.renameSync(tmp, file);
     return buf.length - next.length;
 }

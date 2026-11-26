@@ -1,4 +1,4 @@
-# Framelly Plugin
+# Framelly (code folder)
 
 - The product is **Framelly** (plugin id `com.framelly.plugin`, MCP server `framelly`). It was El Subtitle Animator before: never write the old name into new text, but keep the code that recognises it (`src/main/names.js`, the `OLD_*` names in `installer/shared/env.js`), so existing projects, data folders and installs keep working. The Claude Code commands are `/framelly-prompt` and `/framelly-prompt-auto` (earlier `/elsa-prompt...`; the installer replaces those). `ELSA` in effect files, node names and markers is a prefix existing timelines rely on: leave it.
 - Run `npm run check` and `npm test` after changes. `check` includes `tools/check-inspector-safe.js`; the tests run without Resolve (see CONTRIBUTING.md).

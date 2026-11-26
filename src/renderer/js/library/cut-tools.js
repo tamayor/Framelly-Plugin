@@ -215,9 +215,23 @@ function ctMarks(kind, r) {
     return [];
 }
 
+// The timeline Resolve shows now, if it is not the one the result was measured on (main writes markers on the current
+// one: another timeline's pause frames would replace its own markers).
+async function ctOtherTimeline(r) {
+    if (!r || !r.timeline) return null;
+    let L = state.live;
+    try { const fresh = await window.sa.poll(false); if (fresh && fresh.ok) L = fresh; } catch (e) { /* the last poll */ }
+    return L && L.ok && L.timeline && L.timeline !== r.timeline ? L.timeline : null;
+}
+
 async function ctMarkers(clear) {
     if (!ctUI.result && !clear) return;
     const kind = ctUI.kind;
+    if (!clear && await ctOtherTimeline(ctUI.result)) {
+        ctUI.marked = null;
+        ctStatus('These results are for timeline “' + ctUI.result.timeline + '”: measure this timeline again.', 'bad');
+        return;
+    }
     const r = await window.sa.cutToolsMarkers(clear ? { clear: true, all: true } : { kind, marks: ctMarks(kind, ctUI.result), clear: true });
     if (!r || r.error) { ctStatus((r && r.error) || 'Markers failed', 'bad'); return; }
     // pause markers follow the settings from now on (ctMarkFollow), until they are cleared or the range changes
@@ -234,6 +248,8 @@ function ctMarkFollow() {
     clearTimeout(ctFollowT);
     ctFollowT = setTimeout(async () => {
         if (ctUI.busy || ctUI.marked !== m) return;
+        if (await ctOtherTimeline(m.result)) { ctUI.marked = null; ctStatus('Markers not moved: another timeline is open in Resolve.', 'bad'); return; }
+        if (ctUI.marked !== m) return;
         const r = await window.sa.cutToolsMarkers({ kind: 'pauses', marks: ctMarks('pauses', ctUI.result), clear: true });
         if (!r || r.error) { ctStatus((r && r.error) || 'Markers not updated', 'bad'); return; }
         ctStatus('Markers moved with the settings: ' + r.added + ' pause markers on the timeline.', 'ok');

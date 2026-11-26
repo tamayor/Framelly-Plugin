@@ -780,7 +780,8 @@
         let a = null;
         const live = typeof state !== 'undefined' && state.livePrev;
         if (!live && info && !info.none && info.itemId && info.presetId && typeof libEntry === 'function') a = libEntry(info.presetId);
-        if (!a || !isMT(a) || isRowTpl(a)) {      // clip mode reads MultiText rows; Justified Pop has none
+        // clip mode reads MultiText rows; a Justified Pop clip's starred text comes back as rows 1 / 2 / 3 (mt_rows_get)
+        if (!a || !isMT(a)) {
             if (mt.clip) { mt.clip = null; mt.over = null; mt.lastKey = ''; mt.lastSub = null; renderMT('U'); }
             return;
         }

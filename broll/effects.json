@@ -96,6 +96,16 @@
       "min": 0,
       "max": 12,
       "step": 0.5
+    },
+    {
+      "key": "holdEnd",
+      "type": "number",
+      "label": "Still at end",
+      "default": 0,
+      "min": 0,
+      "max": 5,
+      "step": 0.1,
+      "help": "Seconds at the end of the clip where the graphic stands completely still (every build, count, wobble and boil has stopped), so the cut lands on a still frame"
     }
   ],
   "effects": [
@@ -765,6 +775,20 @@
           "type": "color",
           "label": "Strike colour",
           "default": "#e05252"
+        },
+        {
+          "key": "rows",
+          "type": "list",
+          "label": "Rows",
+          "default": [],
+          "help": "Optional scoreboard under the two cards, one row per line: \"Label | left | right\". Each row comes in on its spoken words (start the label with a word that is said); the last row's right side wins."
+        },
+        {
+          "key": "winLabel",
+          "type": "text",
+          "label": "Win tag",
+          "default": "ahead",
+          "help": "With rows: the tag under the winning side"
         },
         {
           "key": "dark",
@@ -4036,6 +4060,248 @@
         }
       ],
       "triggers": []
+    },
+    {
+      "id": "riso-end-card",
+      "name": "Riso end card",
+      "group": "Hand-drawn",
+      "description": "Before 2028 satire ending over the last talking shot: a strawberry SATIRE label, the episode's line on balanced cream paper strips (last word strawberry with a pen underline), the BEFORE 2028 sign-off on a matcha block and the series question underlined. Each piece cuts in on twos. Use with Hand-made.",
+      "seconds": 3,
+      "defaults": {
+        "x": 0.5,
+        "y": 0.5
+      },
+      "fields": [
+        {
+          "key": "label",
+          "type": "text",
+          "label": "Label",
+          "default": "SATIRE LANG 'TO."
+        },
+        {
+          "key": "line",
+          "type": "text",
+          "label": "Episode line",
+          "default": "Pero yung tarp sa kanto niyo, hindi."
+        },
+        {
+          "key": "emph",
+          "type": "text",
+          "label": "Emphasised ending",
+          "default": "hindi."
+        },
+        {
+          "key": "kicker",
+          "type": "text",
+          "label": "Kicker",
+          "default": "BEFORE"
+        },
+        {
+          "key": "year",
+          "type": "text",
+          "label": "Year",
+          "default": "2028"
+        },
+        {
+          "key": "question",
+          "type": "text",
+          "label": "Question",
+          "default": "Kanino galing ang pera?"
+        },
+        {
+          "key": "top",
+          "type": "number",
+          "label": "Top (px of 1920)",
+          "default": 150,
+          "min": 0,
+          "max": 1200,
+          "step": 2
+        },
+        {
+          "key": "size",
+          "type": "number",
+          "label": "Line size",
+          "default": 66,
+          "min": 40,
+          "max": 120,
+          "step": 2
+        },
+        {
+          "key": "at",
+          "type": "number",
+          "label": "Starts at (frame)",
+          "default": 0,
+          "min": 0,
+          "max": 600,
+          "step": 1
+        },
+        {
+          "key": "gap",
+          "type": "number",
+          "label": "Frames between pieces",
+          "default": 6,
+          "min": 2,
+          "max": 30,
+          "step": 1
+        },
+        {
+          "key": "scrim",
+          "type": "number",
+          "label": "Top scrim",
+          "default": 0.55,
+          "min": 0,
+          "max": 1,
+          "step": 0.05
+        }
+      ]
+    },
+    {
+      "id": "riso-lower-third",
+      "name": "Riso lower third",
+      "group": "Hand-drawn",
+      "description": "Before 2028 satire lower third at chest level of a 9:16 talking shot (above the subtitles and the app UI). Mode chyron: fake TV-news bar (HON. LMR, LINGKOD-BAYAN under it, the episode's subtext), wipes in. Mode receipt: torn RESIBO slip with the law / figure, flips in. Mode reality: strawberry SATIRE · Pero yung resibo, totoo. bar, flips in. Use with Hand-made.",
+      "seconds": 4,
+      "defaults": {
+        "x": 0.5,
+        "y": 0.5
+      },
+      "fields": [
+        {
+          "key": "mode",
+          "type": "select",
+          "label": "Mode",
+          "default": "chyron",
+          "options": [
+            "chyron",
+            "receipt",
+            "reality"
+          ]
+        },
+        {
+          "key": "line1",
+          "type": "text",
+          "label": "Chyron name",
+          "default": "HON. LMR"
+        },
+        {
+          "key": "line2",
+          "type": "text",
+          "label": "Chyron subtext",
+          "default": "Mapagbigay Gamit ang Buwis Mo"
+        },
+        {
+          "key": "badge",
+          "type": "text",
+          "label": "Badge",
+          "default": ""
+        },
+        {
+          "key": "badgeColor",
+          "type": "text",
+          "label": "Badge colour",
+          "default": "#5a2d91"
+        },
+        {
+          "key": "label",
+          "type": "text",
+          "label": "Receipt label",
+          "default": "RESIBO:"
+        },
+        {
+          "key": "value",
+          "type": "text",
+          "label": "Receipt value",
+          "default": "COA Circular 2013-004"
+        },
+        {
+          "key": "note",
+          "type": "text",
+          "label": "Receipt note",
+          "default": ""
+        },
+        {
+          "key": "lead",
+          "type": "text",
+          "label": "Reality lead",
+          "default": "SATIRE ·"
+        },
+        {
+          "key": "text",
+          "type": "text",
+          "label": "Reality text",
+          "default": "Pero yung resibo, totoo."
+        },
+        {
+          "key": "left",
+          "type": "number",
+          "label": "Left (px of 1080)",
+          "default": 64,
+          "min": 0,
+          "max": 1000,
+          "step": 1
+        },
+        {
+          "key": "top",
+          "type": "number",
+          "label": "Top (px of 1920)",
+          "default": 1100,
+          "min": 0,
+          "max": 1900,
+          "step": 1
+        },
+        {
+          "key": "at",
+          "type": "number",
+          "label": "Starts at (frame)",
+          "default": 0,
+          "min": 0,
+          "max": 600,
+          "step": 1
+        },
+        {
+          "key": "size1",
+          "type": "number",
+          "label": "Chyron line 1 size",
+          "default": 54,
+          "min": 24,
+          "max": 90,
+          "step": 1
+        },
+        {
+          "key": "size2",
+          "type": "number",
+          "label": "Chyron subtext size",
+          "default": 40,
+          "min": 20,
+          "max": 80,
+          "step": 1
+        },
+        {
+          "key": "align",
+          "type": "select",
+          "label": "Align",
+          "default": "left",
+          "options": [
+            "left",
+            "center"
+          ]
+        },
+        {
+          "key": "title",
+          "type": "text",
+          "label": "Chyron title (under the name)",
+          "default": "LINGKOD-BAYAN"
+        },
+        {
+          "key": "sizeT",
+          "type": "number",
+          "label": "Chyron title size",
+          "default": 28,
+          "min": 14,
+          "max": 60,
+          "step": 1
+        }
+      ]
     }
   ]
 }

@@ -15,6 +15,7 @@ const http = require('http');
 const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
+const { AsyncLocalStorage } = require('async_hooks');
 
 const state = require('./state');
 const { DATA_DIR } = require('./config');
@@ -45,6 +46,18 @@ const LAYOUT_DIR = path.join(DATA_DIR, 'layouts');
 let server = null;
 let token = null;
 
+// The HTTP call a tool runs for: its signal aborts when the MCP client gave up (it times out after 180 s), so the long
+// loops below stop between clips and give the lock back instead of working on for nobody.
+const callCtx = new AsyncLocalStorage();
+function callGone() { const c = callCtx.getStore(); return !!(c && c.signal.aborted); }
+
+// A promise, or null after ms (the timer is cleared when the promise settles first).
+function upTo(p, ms) {
+    let timer;
+    const late = new Promise(res => { timer = setTimeout(() => res(null), ms); });
+    return Promise.race([p, late]).finally(() => clearTimeout(timer));
+}
+
 // ------------------------------------------------------------------ tools
 
 const TOOLS = {
@@ -58,7 +71,7 @@ const TOOLS = {
         if (args.cancel) return { cancelled: MC.matchCutCancel() };
         const j = await MC.matchCutStart(args);
         const waitMs = Math.max(0, Math.min(170, Number.isFinite(Number(args.wait)) ? Number(args.wait) : 150)) * 1000;
-        const r = await Promise.race([j.promise, new Promise(res => setTimeout(() => res(null), waitMs))]);
+        const r = await upTo(j.promise, waitMs);
         if (r) { if (!r.ok) throw new Error(r.error); return r; }
         return { running: true, progress: MC.matchCutStatus().progress, note: 'Still rendering. Call match_cut with status: true for the result.' };
     },
@@ -77,23 +90,25 @@ const TOOLS = {
     async place_broll(args) {
         args = args || {};
         const B = require('./broll');
-        await waitFree(20000);
-        // vibe: the look of this placement (or of every item that has none of its own)
-        if (!Array.isArray(args.items)) return B.brollPlace(null, { ...args, props: B.brollVibeProps(args.vibe, args.props) });
-        const run = B.brollPlaceMany(null, args.items.map(it => ({ ...it, props: B.brollVibeProps(it && it.vibe !== undefined ? it.vibe : args.vibe, it && it.props) })));
-        const waitMs = Math.max(0, Math.min(170, Number.isFinite(Number(args.wait)) ? Number(args.wait) : 150)) * 1000;
-        const r = await Promise.race([run, new Promise(res => setTimeout(() => res(null), waitMs))]);
-        if (r) return { results: r };
-        return { running: true, status: B.brollStatus(), note: 'Still rendering in the background. Call list_broll { placed: true } to see what is placed.' };
+        return waitFree(20000, async () => {
+            // vibe: the look of this placement (or of every item that has none of its own)
+            if (!Array.isArray(args.items)) return B.brollPlace(null, { ...args, props: B.brollVibeProps(args.vibe, args.props) });
+            const run = B.brollPlaceMany(null, args.items.map(it => ({ ...it, props: B.brollVibeProps(it && it.vibe !== undefined ? it.vibe : args.vibe, it && it.props) })));
+            const waitMs = Math.max(0, Math.min(170, Number.isFinite(Number(args.wait)) ? Number(args.wait) : 150)) * 1000;
+            const r = await upTo(run, waitMs);
+            if (r) return { results: r };
+            return { running: true, status: B.brollStatus(), note: 'Still rendering in the background. Call list_broll { placed: true } to see what is placed.' };
+        });
     },
     async adjust_broll(args) {
         args = args || {};
         const B = require('./broll');
-        await waitFree(20000);
-        const o = { ...args, props: B.brollVibeProps(args.vibe, args.props) };
-        if (args.all) return B.brollRestyle(null, o);
-        if (!args.id) throw new Error('adjust_broll: id is required (or all: true to change every B-roll on this timeline)');
-        return B.brollAdjust(null, o);
+        return waitFree(20000, async () => {
+            const o = { ...args, props: B.brollVibeProps(args.vibe, args.props) };
+            if (args.all) return B.brollRestyle(null, o);
+            if (!args.id) throw new Error('adjust_broll: id is required (or all: true to change every B-roll on this timeline)');
+            return B.brollAdjust(null, o);
+        });
     },
     remove_broll(args) { return require('./broll').brollRemove(null, args || {}); },
     // B-roll tab > Collage (collage.js): the whole set-up (and with render: true the render and placing) in one run.
@@ -103,16 +118,15 @@ const TOOLS = {
         const COL = require('./collage');
         if (args.status) return COL.collageAutoStatus();
         if (args.cancel) return { cancelled: COL.collageCancel() };
-        if (args.render) await waitFree(20000);
-        const run = COL.collageAuto(null, args);
         const waitMs = Math.max(0, Math.min(170, Number.isFinite(Number(args.wait)) ? Number(args.wait) : 150)) * 1000;
-        const r = await Promise.race([run, new Promise(res => setTimeout(() => res(null), waitMs))]);
+        const go = () => upTo(COL.collageAuto(null, args), waitMs);
+        const r = args.render ? await waitFree(20000, go) : await go();
         if (!r) return { running: true, status: COL.collageAutoStatus(), note: 'Still working. Call collage_auto with status: true for the result.' };
         const beats = (r.beats || []).map(b => ({ id: b.id, frames: b.frames, line: b.line, visual: b.visual, queries: b.queries, overlays: b.overlays, assets: b.assets.map(a => a.name), missing: b.need.missing }));
         return { timeline: r.timeline, dir: r.dir, fps: r.fps, auto: r.auto, beats, placed: r.placed, notes: r.notes };
     },
-    async finalize_broll(args) { await waitFree(20000); return require('./broll').brollFinalize(null, args || {}); },
-    async sync_broll(args) { await waitFree(20000); return require('./broll').brollSync(null, args || {}); },
+    async finalize_broll(args) { return waitFree(20000, () => require('./broll').brollFinalize(null, args || {})); },
+    async sync_broll(args) { return waitFree(20000, () => require('./broll').brollSync(null, args || {})); },
     suggest_broll(args) { return require('./broll').brollSuggest(null, args || {}); },
     // Cut tab (auto-cut.js): analyse the source track (nothing changes), then build: true makes the new "(cut)"
     // timeline. Omitted options use the Cut tab's last values.
@@ -121,15 +135,16 @@ const TOOLS = {
         const C = require('./auto-cut');
         if (args.status) return C.cutStatus();
         if (args.cancel) return { cancelled: C.cutCancel() };
-        await waitFree(20000);
-        const opts = { ...args };
-        delete opts.build;
-        if (!args.build || args.reanalyse !== false) {
-            const sum = await C.cutAnalyze(null, opts);
-            if (sum && sum.needsEngine) throw new Error('The Cut engine (numpy) is not installed: open the Cut tab in the panel and press Install');
-            if (!args.build) return { ...sum, note: 'Nothing changed yet. Call auto_cut with build: true (and ignore: [drop ids to keep]) to make the cut timeline.' };
-        }
-        return C.cutBuild(null, opts);
+        return waitFree(20000, async () => {
+            const opts = { ...args };
+            delete opts.build;
+            if (!args.build || args.reanalyse !== false) {
+                const sum = await C.cutAnalyze(null, opts);
+                if (sum && sum.needsEngine) throw new Error('The Cut engine (numpy) is not installed: open the Cut tab in the panel and press Install');
+                if (!args.build) return { ...sum, note: 'Nothing changed yet. Call auto_cut with build: true (and ignore: [drop ids to keep]) to make the cut timeline.' };
+            }
+            return C.cutBuild(null, opts);
+        });
     },
     async status(args) {
         const { tl, meta } = await currentTimeline();
@@ -164,7 +179,9 @@ const TOOLS = {
         const { tl } = await currentTimeline();
         const found = await findItemsByIds(tl, ids, 'video');
         const out = [];
+        let stopped = false;
         for (const id of ids) {
+            if (callGone()) { stopped = true; break; }
             const it = found.get(id);
             if (!it) { out.push({ itemId: id, error: 'not on the timeline' }); continue; }
             const dur = Number(await it.GetDuration()) || 0;
@@ -180,6 +197,7 @@ const TOOLS = {
         }
         const checked = out.filter(x => !x.error && !x.skipped);
         const res = { total: ids.length, checked: checked.length, skipped: out.filter(x => x.skipped).length, blank: checked.filter(x => x.blank).length, clips: out };
+        if (stopped) { res.stopped = true; return res; }
         if (args && args.content) {     // also the composited frames through ffmpeg: black tails, static entrances
             const rc = await CUTTOOLS.checkRender({ itemIds: ids, step: args.step });
             res.content = { problems: rc.problems, clips: rc.clips.map(c => ({ itemId: c.itemId, name: c.name, ok: c.ok, flags: c.flags, error: c.error })) };
@@ -420,6 +438,7 @@ const TOOLS = {
         ids = ids.slice(-40);
         const out = [];
         for (const id of ids) {
+            if (callGone()) return { clips: out, stopped: true };
             const p = placed.find(x => x.itemId === id);
             const row = { itemId: id, subtitle: p ? p.subtitle : undefined, preset: p ? p.preset : undefined };
             try { row.tools = ((await bridgeCall('read_style', { item: id, comp: null }, 8000)) || {}).tools || []; }
@@ -442,11 +461,12 @@ const TOOLS = {
         const from = Number.isFinite(Number(args.fromFrame)) ? Number(args.fromFrame) : -Infinity;
         const to = Number.isFinite(Number(args.toFrame)) ? Number(args.toFrame) : Infinity;
         const out = [];
-        state.applying = true;
-        try {
+        let stopped = false;
+        {
             const nTracks = await tl.GetTrackCount('video');
-            for (let t = 1; t <= nTracks; t++) {
+            for (let t = 1; t <= nTracks && !stopped; t++) {
                 for (const it of (await tl.GetItemListInTrack('video', t)) || []) {
+                    if (callGone()) { stopped = true; break; }
                     const id = String(await it.GetUniqueId());
                     if (ids && !ids.has(id)) continue;
                     const st = await it.GetStart();
@@ -462,8 +482,8 @@ const TOOLS = {
                     } catch (e) { out.push({ itemId: id, track: 'V' + t, start: st, error: e.message }); }
                 }
             }
-        } finally { state.applying = false; }
-        return { values: h, saved: !!args.save, clips: out.length, results: out };
+        }
+        return Object.assign({ values: h, saved: !!args.save, clips: out.length, results: out }, stopped ? { stopped: true } : {});
     },
 
     // The MultiText Row controls (gap / justify / link / per-row x y) on clips already on the timeline (all MultiText
@@ -479,11 +499,12 @@ const TOOLS = {
         const from = Number.isFinite(Number(args.fromFrame)) ? Number(args.fromFrame) : -Infinity;
         const to = Number.isFinite(Number(args.toFrame)) ? Number(args.toFrame) : Infinity;
         const out = [];
-        state.applying = true;
-        try {
+        let stopped = false;
+        {
             const nTracks = await tl.GetTrackCount('video');
-            for (let t = 1; t <= nTracks; t++) {
+            for (let t = 1; t <= nTracks && !stopped; t++) {
                 for (const it of (await tl.GetItemListInTrack('video', t)) || []) {
+                    if (callGone()) { stopped = true; break; }
                     const id = String(await it.GetUniqueId());
                     if (ids && !ids.has(id)) continue;
                     const st = await it.GetStart();
@@ -497,8 +518,8 @@ const TOOLS = {
                     } catch (e) { if (ids) out.push({ itemId: id, track: 'V' + t, start: st, error: e.message }); }
                 }
             }
-        } finally { state.applying = false; }
-        return { values: req, saved: !!args.save, clips: out.length, results: out };
+        }
+        return Object.assign({ values: req, saved: !!args.save, clips: out.length, results: out }, stopped ? { stopped: true } : {});
     },
 
     // Clips with an empty Inspector (a preset imported onto a plain "Text+" / "MultiText") are rebuilt as title-template
@@ -580,6 +601,21 @@ const TOOLS = {
     }
 };
 
+// Tools that change the timeline or make Resolve render run one at a time under the automation lock (auto-session.js
+// waitFree), however many MCP servers call. flag: state.applying is set too, so the panel waits for them as well (only
+// for tools that never need it clear themselves: settleNow, apply and spotlight.js skip or refuse while it is set).
+// The B-roll, Cut and Collage tools take the lock in their own bodies: their status / cancel calls must not wait.
+// allowLive (get_frame): runs while a panel "Preview in Resolve" is open, as it only grabs a frame.
+const LOCKED = [
+    ['place', 10000], ['place_stack', 10000], ['measure_text', 10000], ['get_frame', 10000, false, true],
+    ['verify_placed', 10000], ['check_render', 10000], ['repair_inspector', 10000], ['spotlight', 10000],
+    ['inspect_placed', 10000, true], ['adjust_highlights', 10000, true], ['adjust_rows', 10000, true], ['remove_placed', 10000, true]
+];
+for (const [name, ms, flag, allowLive] of LOCKED) {
+    const run = TOOLS[name];
+    TOOLS[name] = (args) => waitFree(ms, () => run.call(TOOLS, args), { flag: !!flag, allowLive: !!allowLive });
+}
+
 // ------------------------------------------------------------------ HTTP server
 
 function send(res, code, body) {
@@ -596,17 +632,21 @@ function handle(req, res) {
     const got = Buffer.from(String(req.headers['x-sa-token'] || ''));
     if (!token || got.length !== Buffer.byteLength(token) || !crypto.timingSafeEqual(got, Buffer.from(token))) return send(res, 401, { ok: false, error: 'bad token' });
     if (req.method !== 'POST' || req.url !== '/call') return send(res, 404, { ok: false, error: 'not found' });
-    let raw = '';
-    req.on('data', (c) => { raw += c; if (raw.length > 1e6) req.destroy(); });
+    // the chunks are joined as bytes and decoded once: a character split across two chunks stays whole
+    const chunks = [];
+    let size = 0;
+    req.on('data', (c) => { size += c.length; if (size > 1e6) return req.destroy(); chunks.push(c); });
     req.on('end', async () => {
         let body;
-        try { body = JSON.parse(raw || '{}'); } catch (e) { return send(res, 400, { ok: false, error: 'bad JSON' }); }
+        try { body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'); } catch (e) { return send(res, 400, { ok: false, error: 'bad JSON' }); }
         const fn = /^[a-z]/.test(String(body.tool || '')) ? TOOLS[body.tool] : null;      // _helpers are internal
         if (!fn) return send(res, 404, { ok: false, error: 'unknown tool ' + body.tool });
         const bad = checkToolArgs(body.tool, body.args || {});        // tool-schemas.js, the MCP script's own schemas
         if (bad) return send(res, 200, { ok: false, error: bad });
+        const ac = new AbortController();
+        res.on('close', () => { if (!res.writableEnded) ac.abort(); });       // the MCP client gave up or went away
         try {
-            send(res, 200, { ok: true, result: await fn(body.args || {}) });
+            send(res, 200, { ok: true, result: await callCtx.run({ signal: ac.signal }, () => fn(body.args || {})) });
         } catch (e) {
             send(res, 200, { ok: false, error: String(e && e.message || e) });
         }

@@ -20,3 +20,8 @@ test('words compare without case, accents or punctuation; first / last word of a
     assert.equal(W.lastWordOf('hello there'), 'there');
     assert.equal(W.lastWordOf(''), '');
 });
+
+test('versus-split rows are counted as the Board counts them (a row with no label is still a row)', () => {
+    const units = W.WORD_UNITS['versus-split']({ rows: ['| 1M | 3M', 'Views | 2M | 5M', '   ', 'a', 'b', 'c', 'd'] });
+    assert.deepEqual(units, ['1M', 'Views', 'a', 'b', 'c']);
+});

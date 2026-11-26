@@ -10,7 +10,7 @@ const WorkflowIntegration = require('./workflow-integration');
 
 const state = require('./state');
 const { INITIAL_PPID } = require('./config');
-const { liveRemove, waitIdle } = require('./live-preview');
+const { liveRemove, loopRestore, waitIdle } = require('./live-preview');
 const { stopAutomation } = require('./automation');
 const { dlog } = require('./log');
 
@@ -19,6 +19,8 @@ const { dlog } = require('./log');
 // own In/Out are put back. That has to finish BEFORE the Resolve connection is torn down, so it is awaited (capped,
 // in case Resolve itself is gone). Concurrent calls (window close, beforeunload, before-quit) share one run.
 let cleanupRun = null;
+// Set when the quit is because Resolve itself is going (quitTrace): then Resolve's menus are not clicked any more.
+let resolveGoing = false;
 function cleanup() {
     if (cleanupRun) return cleanupRun;
     cleanupRun = (async () => {
@@ -28,12 +30,18 @@ function cleanup() {
             const run = (async () => { await waitIdle(6000); await liveRemove('restore'); })();
             try { await Promise.race([run, new Promise(r => setTimeout(r, 10000))]); } catch (e) { /* the sweep removes it next time */ }
         }
+        // The preview's Playback > Loop is turned back off (only when the plugin turned it on: otherwise no-op), capped.
+        if (!resolveGoing) {
+            try { await Promise.race([loopRestore(), new Promise(r => setTimeout(r, 3000))]); } catch (e) { /* ignore */ }
+        }
         if (state.resolveWatchTimer) { clearInterval(state.resolveWatchTimer); state.resolveWatchTimer = null; }
         if (state.segWatchTimer) { clearInterval(state.segWatchTimer); state.segWatchTimer = null; }
         if (state.segSweepTimer) { clearInterval(state.segSweepTimer); state.segSweepTimer = null; }
         try { stopAutomation(); } catch (e) { /* ignore */ }
         try { require('./media-analysis').stopAsr(); } catch (e) { /* ignore */ }
         try { require('./broll').brollCancel(); } catch (e) { /* ignore */ }
+        // an open Colors panel / 'choose color' dialog (its osascript would outlive the app) and the warm helper
+        try { const cp = require('./color-picker'); cp.cancelNativeColor(); cp.stopJxaHelper(); } catch (e) { /* ignore */ }
         try { if (state.bridge) state.bridge.kill(); } catch (e) { /* ignore */ }
         try { if (state.bridgeRender) state.bridgeRender.kill(); } catch (e) { /* ignore */ }
         try { require('./perf').perfFlush(); } catch (e) { /* ignore */ }
@@ -127,5 +135,5 @@ let resolvePid = 0, pgrepMisses = 0;
 function quitTrace(reason, meta, quit = true) {
     try { require('./perf').record('quit.' + reason, 0, meta); } catch (e) { /* ignore */ }
     dlog('[quit]', reason, meta || '');
-    if (quit) quitPlugin();
+    if (quit) { resolveGoing = true; quitPlugin(); }
 }

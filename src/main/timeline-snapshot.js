@@ -13,6 +13,7 @@ module.exports = {
 
 const { RESOLVE_BATCH } = require('./config');
 const PERF = require('./perf');
+const { isTitleClipName } = require('./title-templates');
 
 
 // opts: { kinds: ['video', 'audio'], withIds: false, withEnabled: true }
@@ -86,7 +87,7 @@ function snapAddTrack(snap, kind, t) {
 function snapCutKeys(snap) {
     const out = [];
     const v1 = snapTrack(snap, 'video', 1);
-    if (v1) for (const x of v1.items) if (!/^Text\+/.test(x.name)) out.push('v1:' + x.start + '-' + x.end);
-    for (const tr of (snap.tracks.audio || [])) for (const x of tr.items) if (!/^Text\+/.test(x.name)) out.push('a' + tr.t + ':' + x.start + '-' + x.end);
+    if (v1) for (const x of v1.items) if (!isTitleClipName(x.name)) out.push('v1:' + x.start + '-' + x.end);
+    for (const tr of (snap.tracks.audio || [])) for (const x of tr.items) if (!isTitleClipName(x.name)) out.push('a' + tr.t + ':' + x.start + '-' + x.end);
     return out;
 }

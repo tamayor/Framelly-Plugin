@@ -3,7 +3,7 @@
 // Lets Claude Code animate a Resolve timeline's subtitles with your presets, through the open plugin panel.
 //
 // Register once:
-//   claude mcp add framelly -- node "/path/to/Framelly Plugin/mcp/framelly-mcp.js"
+//   claude mcp add framelly -- node "/path/to/Framelly/mcp/framelly-mcp.js"
 // The plugin panel must be open in Resolve: it writes its local address and token to
 // ~/.framelly/mcp-endpoint.json when it starts (see src/main/automation.js).
 

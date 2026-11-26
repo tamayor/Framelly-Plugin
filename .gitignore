@@ -21,3 +21,6 @@ WorkflowIntegration.node
 
 # Written by the installer into the installed plugin
 data-location.json
+
+# Built installers (npm run dist / installer build)
+Installers/

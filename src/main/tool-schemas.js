@@ -569,8 +569,20 @@ function checkToolArgs(name, args) {
         if (v === undefined || v === null || !spec) continue;
         const bad = typeMismatch(v, spec);
         if (bad) return name + ': ' + k + ' ' + bad;
+        args[k] = fromText(v, spec);
     }
     return null;
+}
+
+// a boolean or number sent as text becomes the real value, so the tools get "false" as false and "10" as 10
+// (both callers hand this same args object on to the tool)
+function fromText(v, spec) {
+    if (typeof v !== 'string') return v;
+    const types = [].concat(spec.type || []);
+    if (types.includes('string')) return v;
+    if (types.includes('boolean') && (v === 'true' || v === 'false')) return v === 'true';
+    if ((types.includes('number') || types.includes('integer')) && v.trim() !== '' && Number.isFinite(Number(v))) return Number(v);
+    return v;
 }
 
 function typeMismatch(v, spec) {
@@ -578,7 +590,7 @@ function typeMismatch(v, spec) {
     const types = [].concat(spec.type || []).filter(t => t !== 'null');
     if (types.length) {
         // numbers and booleans sent as text ("3", "true"), and numbers where text is expected (ids, frames), are accepted:
-        // the tools convert them, and clients do send them
+        // checkToolArgs converts them (fromText), and clients do send them
         const num = typeof v === 'number' ? v : (typeof v === 'string' && v.trim() !== '' ? Number(v) : NaN);
         const ok = types.some(t =>
             (t === 'integer' && Number.isInteger(num)) || (t === 'number' && Number.isFinite(num)) ||

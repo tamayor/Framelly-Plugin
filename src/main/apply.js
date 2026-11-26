@@ -5,6 +5,7 @@ module.exports = {
 };
 
 const path = require('path');
+const { AsyncLocalStorage } = require('async_hooks');
 const fs = require('fs');
 
 const state = require('./state');
@@ -18,7 +19,7 @@ const { settleLater } = require('./settle');
 const { derived, designForFusion, fusionBoxes } = require('./fusion-setting');
 const { loadLib, saveLib } = require('./library');
 const {
-    liveClearMarks, liveRemove, liveSetMarks, placeLiveSfx, regAdd, regCountOthers, regDel, sessionSounds, sweepTempClips, waitIdle
+    liveClearMarks, liveRemove, liveSetMarks, placeLiveSfx, regAdd, regCountOthers, regDel, sessionSounds, sweepTempClips
 } = require('./live-preview');
 const { ensureStopped, noteFrame } = require('./playback');
 const {
@@ -34,20 +35,29 @@ const { frameToTC, getProject, setSubtitlesEnabled, tcToFrame, timelineMeta } = 
 const { snapAdd, takeSnapshot } = require('./timeline-snapshot');
 const PERF = require('./perf');
 
-let applyDepth = 0;
+// The call chain of a running apply(): a call made from inside it does not wait for (or clear) its own flag.
+const applyCtx = new AsyncLocalStorage();
 async function apply(event, req) {
     const warnings = [];
-    if (req && req.live) await waitIdle(6000);      // a preview move still running would place sounds for the old clip
-    applyDepth++;
-    state.applying = true;
+    const nested = !!applyCtx.getStore();
+    if (!nested) {
+        // A preview move, B-roll, Collage, another apply or an MCP tool in another call chain is editing the timeline:
+        // wait for it instead of placing at the same time (and never clear the flag it holds). A live preview waits
+        // too: a preview move still running would place sounds for the old clip.
+        const { otherHold } = require('./auto-session');
+        const until = Date.now() + 6000;
+        while ((state.applying || otherHold()) && Date.now() < until) await new Promise(r => setTimeout(r, 50));
+        if (state.applying || otherHold()) return { ok: false, busy: true, error: 'Resolve is busy placing something: try again in a moment', warnings };
+        state.applying = true;      // same tick as the check
+    }
     const sp = PERF.span('apply', { live: !!(req && req.live) });
     let ok = false;
     try {
-        const r = await applyInner(req, warnings, sp);
+        const r = await applyCtx.run({}, () => applyInner(req, warnings, sp));
         ok = !!(r && r.ok);
         return r;
     } finally {
-        if (--applyDepth <= 0) { applyDepth = 0; state.applying = false; }
+        if (!nested) state.applying = false;
         sp.end({ ok });
     }
 }
@@ -99,7 +109,7 @@ async function applyInner(req, warnings, sp) {
         try { const tcNow = await tl.GetCurrentTimecode(); noteFrame(tlName, tcToFrame(tcNow, meta), tcNow); } catch (e) { /* measured by isPlaying then */ }
         sp.mark('snapshot');
         if (req.live) await ensureStopped(tl);      // a playing (looping) timeline moves the playhead under the insert
-        const cutBefore = await cutSnapshot(tl, snap);
+        let cutBefore = await cutSnapshot(tl, snap);
         const vTrack = await pickTrack(tl, 'video', req.textTrack || 0, textStart, textStart + want, 2, trackNotes, req.place, snap);
         sp.mark('pickTrackV');
 
@@ -135,7 +145,11 @@ async function applyInner(req, warnings, sp) {
 
         // 1. Insert at the very end of the timeline, trim, move to vTrack at textStart, and immediately restore playhead.
         const tlEnd = await tl.GetEndFrame();
+        const regBefore = snap.withIds ? regCountOthers() : 0;
         await sweepTempClips(tl, snap);
+        // the sweep deleted stray temporary clips (a lost preview's sounds) that the snapshot still lists: the cut
+        // guard's "before" is read again, or those clips would count as real clips that moved
+        if (snap.withIds && regCountOthers() < regBefore) cutBefore = await cutSnapshot(tl);
         sp.mark('sweep');
         // Direct placement (no playhead move, no ripple): a reusable Text+/Fusion template clip from the Media Pool is
         // appended onto the chosen track at the caption's exact frame. Used when a template exists and checks out.
@@ -401,6 +415,7 @@ async function applyInner(req, warnings, sp) {
             // the session also keeps each clip's handle and place, so ending the preview deletes by handle (live-preview.js sessionSounds)
             const sess = { itemId, compName, compPath, animId: anim.id, origTC, sfxId: liveSfxId, sfxItem: liveSfxItem, sfxWhere: liveSfxWhere, sfxPath, item,
                 itemWhere: { track: vTrack, start: textStart } };
+            try { sess.tlId = String((await tl.GetUniqueId()) || ''); } catch (e) { /* adopted at the first check instead */ }
             sessionSounds(sess, [], true);
             sess.lone = lone;
             try {

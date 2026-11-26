@@ -24,7 +24,7 @@ const {
 const { loneRow, rowFramesFor, segSfxForget, segSfxSetEmpty } = require('./row-sfx');
 const { importSfx, relinkToProjectCopy } = require('./sfx-import');
 const { tailFor, typingFramesFor } = require('./title-templates');
-const { findItemsByIds, getProject, setSubtitlesEnabled, timelineMeta } = require('./resolve');
+const { currentTimeline, findItemsByIds, getProject, setSubtitlesEnabled, timelineMeta } = require('./resolve');
 const { snapAdd } = require('./timeline-snapshot');
 const PERF = require('./perf');
 
@@ -212,10 +212,29 @@ function transformProps(req, meta) {
     return { TransformEnabled: true, Pan: pan, Tilt: tilt, ZoomGang: true, ZoomX: zoom, ZoomY: zoom, RotationAngle: Math.round((Number(req.rotation) || 0) * 1000) / 1000 };
 }
 
+// The preview belongs to the timeline it was placed on. Its clip and sound handles still answer after the user
+// switches timelines, so without this check a move would edit the old timeline's clip and delete / append sounds
+// on the new one. True when tl is the session's timeline (or it cannot be told). A session that does not know its
+// timeline yet takes the current one at its first check.
+const OTHER_TL_RECHECK_MS = 1500;      // after an "other timeline" answer, the same answer for this long (no Resolve calls)
+const OTHER_TL = { ok: false, busy: true, otherTimeline: true, error: 'The Resolve preview is on another timeline' };
+async function onSessionTimeline(s, tl) {
+    if (!s || !tl) return true;
+    let id = '';
+    try { id = String((await tl.GetUniqueId()) || ''); } catch (e) { return true; }
+    if (!id) return true;
+    if (!s.tlId) { s.tlId = id; return true; }
+    const same = String(s.tlId) === id;
+    s.otherTlAt = same ? 0 : Date.now();
+    return same;
+}
+function otherTimelineRecently(s) { return !!(s && s.otherTlAt && Date.now() - s.otherTlAt < OTHER_TL_RECHECK_MS); }
+
 // Re-applies text, Text Design, boxes, transform and timing from the panel onto the live clip.
 async function liveUpdate(event, req) {
     if (!state.liveSession) return { ok: false, error: 'No Resolve preview is running', gone: true };
     if (state.applying) return { ok: false, busy: true };
+    if (otherTimelineRecently(state.liveSession)) return Object.assign({}, OTHER_TL);
     state.applying = true;
     const sp = PERF.span('live.update');
     try {
@@ -226,6 +245,7 @@ async function liveUpdate(event, req) {
         const project = await getProject();
         const tl = project && await project.GetCurrentTimeline();
         if (!tl) throw new Error('Open a timeline in Resolve');
+        if (!(await onSessionTimeline(state.liveSession, tl))) return Object.assign({}, OTHER_TL);      // nothing is touched
         const item = await liveItem(tl);
         if (!item) { state.liveSession = null; return { ok: false, gone: true, error: 'The preview clip is no longer on the timeline' }; }
         const tc0 = await tl.GetCurrentTimecode();      // the playhead stays where it is while the clip is moved
@@ -396,6 +416,10 @@ async function liveAlive() {
     // preview clip would be removed as well.
     const stale = () => state.liveSession !== s || state.applying;
     try {
+        // on another timeline the clip is not looked for here (it is on its own timeline): it counts as there
+        if (otherTimelineRecently(s)) return { ok: true, alive: true, otherTimeline: true };
+        const cur = await currentTimeline(900);
+        if (cur && cur.tl && !(await onSessionTimeline(s, cur.tl))) return { ok: true, alive: true, otherTimeline: true };
         let ok = false;
         try { const st = await s.item.GetStart(); ok = typeof st === 'number' && st >= 0; } catch (e) { ok = false; }
         if (!ok) {
@@ -430,6 +454,12 @@ async function liveRemove(marks) {
     try {
         const project = await getProject();
         const tl = project && await project.GetCurrentTimeline();
+        if (tl && s && !(await onSessionTimeline(s, tl))) {
+            // the preview is on another timeline: nothing on this one is touched (marks, sounds, clips). Its clip and
+            // sounds stay in the registry, so the sweep removes them once that timeline is current again.
+            liveMarks.saved = undefined;      // those were the other timeline's marks
+            return { ok: true, otherTimeline: true };
+        }
         let tcR = null;
         try { if (tl) tcR = await tl.GetCurrentTimecode(); } catch (e) { tcR = null; }
         if (tl && mode === 'restore') await liveRestoreMarks(tl);
@@ -479,6 +509,7 @@ async function liveFinish(event, req) {
         const project = await getProject();
         const tl = project && await project.GetCurrentTimeline();
         if (!tl) throw new Error('Open a timeline in Resolve');
+        if (!(await onSessionTimeline(s, tl))) return { ok: false, otherTimeline: true, error: 'The Resolve preview is on another timeline. Open that timeline to apply it.', warnings };
         const item = await liveItem(tl);
         if (!item) { state.liveSession = null; throw new Error('The preview clip is no longer on the timeline'); }
         const meta = await timelineMeta(tl);

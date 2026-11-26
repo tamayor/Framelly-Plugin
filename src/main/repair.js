@@ -184,6 +184,9 @@ async function repairInspector(args) {
     if (!found.length) return Object.assign({ rebuilt: [], failed: [], skipped, note: 'No clip on this timeline needs rebuilding.' }, emptyOut);
     const origTC = await tl.GetCurrentTimecode();
     const rebuilt = [], failed = [];
+    // the scan above ran without the flag, so a panel step (a row-sound refit, a preview move) may have taken it since:
+    // never rebuild alongside it, and never clear a flag this call did not set
+    if (state.applying) throw new Error('The panel is busy placing a clip. Try again in a moment.');
     state.applying = true;
     try {
         for (const f of found) {

@@ -267,6 +267,10 @@ function loadRules() {
 
 function saveRules(r) {
     const clean = cleanRules(r);
+    // a hand-edited file that no longer parses was read as the defaults: kept aside, so the user's rules are not lost
+    let raw = null;
+    try { raw = fs.readFileSync(RULES_FILE, 'utf8'); } catch (e) { /* no file yet */ }
+    if (raw !== null) { try { JSON.parse(raw); } catch (e) { try { fs.copyFileSync(RULES_FILE, RULES_FILE + '.corrupt-' + Date.now()); } catch (e2) { /* ignore */ } } }
     const tmp = RULES_FILE + '.tmp';
     fs.writeFileSync(tmp, JSON.stringify(clean, null, 2));
     fs.renameSync(tmp, RULES_FILE);

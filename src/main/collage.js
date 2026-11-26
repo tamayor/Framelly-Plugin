@@ -894,9 +894,20 @@ async function putClip(p, ours, c, track, notes) {
             const mpi = await ex.item.GetMediaPoolItem();
             if (mpi && await mpi.ReplaceClip(c.file)) return { role: c.role, start: c.start, track: 'V' + ex.track, how: 'replaced' };
         }
+        let oldMpi = null;
+        try { oldMpi = await ex.item.GetMediaPoolItem(); } catch (e) { /* put back from its file instead */ }
         await p.tl.DeleteClips([ex.item], false);
         track = ex.track;
         how = 'a new clip in the old one\'s place';
+        try {
+            const placed = await broll().placeFile(p.project, p.tl, c.file, p.tlStart + c.start, c.frames, track, false);
+            notes.push(...placed.notes);
+            return { role: c.role, start: c.start, track: placed.track, how };
+        } catch (err) {
+            // the old clip is gone: put it back where it was rather than leave a hole
+            await broll().putBack(p.project, p.tl, oldMpi, ex.file, p.tlStart + ex.start, ex.frames, ex.track, false);
+            throw err;
+        }
     }
     const placed = await broll().placeFile(p.project, p.tl, c.file, p.tlStart + c.start, c.frames, track, false);
     notes.push(...placed.notes);
@@ -906,6 +917,12 @@ async function putClip(p, ours, c, track, notes) {
 async function placeInner(p, plan, o, renderSec) {
     const clips = (plan.clips || []).filter(c => fs.existsSync(c.file) && (o.captions !== false || c.role !== 'captions'));
     if (!clips.length) throw new Error('The rendered files are gone: Render again.');
+    // the timeline lock while the clips and sounds go in (the renders are done by now)
+    await broll().claimTimeline();
+    try { return await placeLocked(p, clips, o, renderSec); } finally { state.applying = false; }
+}
+
+async function placeLocked(p, clips, o, renderSec) {
     const now = await p.project.GetCurrentTimeline();
     if (!now || (await now.GetName()) !== p.name) throw new Error('The timeline changed. Open "' + p.name + '" and place again.');
     send({ phase: 'place', text: 'Placing ' + clips.length + ' clip' + (clips.length === 1 ? '' : 's') + ' on "' + p.name + '"…' });
@@ -984,29 +1001,32 @@ async function placeSfx(p, shots, notes) {
     const track = await pickTrack(p.tl, 'audio', 0, p.tlStart + first, p.tlStart + last.frame + last.len, 1, notes);
     const turn = {}, items = new Map(), ids = [], missing = new Set();
     const vary = variations();
-    for (const c of cues) {
-        const files = lib[c.kind] || [];
-        if (!files.length) { missing.add(c.kind); continue; }
-        const file = files[(turn[c.kind] = ((turn[c.kind] ?? -1) + 1)) % files.length];
-        if (!items.has(file)) {
-            const r = await importSfx(p.project, file, true);
-            const total = r && r.item ? Math.max(1, tcToFrame(await r.item.GetClipProperty('Duration'), p.meta)) : 0;
-            items.set(file, r && r.item ? { mpi: r.item, total } : null);
+    // the record is written however the loop ends, so sounds placed before a throw come off on the next Place
+    try {
+        for (const c of cues) {
+            const files = lib[c.kind] || [];
+            if (!files.length) { missing.add(c.kind); continue; }
+            const file = files[(turn[c.kind] = ((turn[c.kind] ?? -1) + 1)) % files.length];
+            if (!items.has(file)) {
+                const r = await importSfx(p.project, file, true);
+                const total = r && r.item ? Math.max(1, tcToFrame(await r.item.GetClipProperty('Duration'), p.meta)) : 0;
+                items.set(file, r && r.item ? { mpi: r.item, total } : null);
+            }
+            const it = items.get(file);
+            if (!it) { notes.push('Resolve could not import ' + path.basename(file)); continue; }
+            const len = Math.max(1, Math.min(c.len, it.total));
+            const placed = await mp.AppendToTimeline([{ mediaPoolItem: it.mpi, mediaType: 2, trackIndex: track, recordFrame: p.tlStart + c.frame, startFrame: 0, endFrame: len }]);
+            if (!placed || !placed[0]) { notes.push('A ' + c.kind + ' sound could not be placed at ' + c.frame); continue; }
+            const item = placed[0];
+            // recorded as soon as it is on the timeline, before the fade / level calls that may throw
+            try { ids.push(String(await item.GetUniqueId())); } catch (e) { /* cannot be taken off automatically next time */ }
+            const fade = Math.min(len, Math.round(fps / 5));
+            try { if (typeof item.SetFades === 'function') await item.SetFades({ FadeIn: 0, FadeOut: fade }); } catch (e) { /* the fade is a convenience */ }
+            const v = vary.next();
+            await applyLevel(item, clampToWindow(v.db, await peakOf(file, 0, len, fps)), v.cents);
         }
-        const it = items.get(file);
-        if (!it) { notes.push('Resolve could not import ' + path.basename(file)); continue; }
-        const len = Math.max(1, Math.min(c.len, it.total));
-        const placed = await mp.AppendToTimeline([{ mediaPoolItem: it.mpi, mediaType: 2, trackIndex: track, recordFrame: p.tlStart + c.frame, startFrame: 0, endFrame: len }]);
-        if (!placed || !placed[0]) { notes.push('A ' + c.kind + ' sound could not be placed at ' + c.frame); continue; }
-        const item = placed[0];
-        const fade = Math.min(len, Math.round(fps / 5));
-        try { if (typeof item.SetFades === 'function') await item.SetFades({ FadeIn: 0, FadeOut: fade }); } catch (e) { /* the fade is a convenience */ }
-        const v = vary.next();
-        await applyLevel(item, clampToWindow(v.db, await peakOf(file, 0, len, fps)), v.cents);
-        try { ids.push(String(await item.GetUniqueId())); } catch (e) { /* cannot be taken off automatically next time */ }
-    }
+    } finally { writeJson(recFile, { timeline: p.name, track, ids }); }
     if (missing.size) notes.push('No ' + [...missing].join(' / ') + ' sound in the SFX library');
-    writeJson(recFile, { timeline: p.name, track, ids });
     return { count: ids.length, removed, track: 'A' + track };
 }
 

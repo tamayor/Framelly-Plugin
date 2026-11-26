@@ -39,9 +39,9 @@ time from the panel, or a whole timeline at once by Claude Code through the bund
 Keep both folders together in one main folder (it can live anywhere):
 
 ```
-Framelly Plugin Main/
-  Framelly Plugin/   the code (this repo, with the installer)
-  Framelly/          your presets, sounds, previews, fonts
+Appselly/
+  Framelly/                 the code (this repo, with the installer; built installers in Installers/)
+  Framelly Source Assets/   your presets, sounds, previews, fonts
 ```
 
 Framelly was called El Subtitle Animator before. Folders that still have that name (the main, code and data
@@ -67,7 +67,8 @@ Run the installer again after moving or renaming the main folder, and after ever
 `installer/` (`cd installer && npm install && npm run build`). From Terminal, `npm run install-panel` in the code
 folder installs the panel only.
 
-`npm run build -- win32 x64` builds the Windows installer, one `Install Framelly (Windows).exe` in the main folder
+`npm run build` puts `Install Framelly (Mac).app` in `Installers/` in this code folder (git-ignored).
+`npm run build -- win32 x64` builds the Windows installer, one `Install Framelly (Windows).exe` in the same folder
 (its unpacked app folder stays in `installer/dist/`). It installs the panel only: the plugin's other parts use macOS
 tools. The installer's code is split by platform: `installer/shared/`, `installer/mac/`, `installer/windows/`.
 
@@ -75,6 +76,12 @@ The installer copies only the runtime files (`manifest.xml`, `package.json`, `ma
 `WorkflowIntegration.node` into
 `/Library/Application Support/Blackmagic Design/DaVinci Resolve/Workflow Integration Plugins/com.framelly.plugin`.
 Resolve runs that copy, not this folder.
+
+The installed panel updates itself from this code folder each time Resolve opens it (`src/main/self-update.js`, run
+first by `main.js`): changed runtime files are copied in, removed ones deleted, and the panel shows "Updated from the
+code folder: N files". Each open adds a line to `Framelly Source Assets/_app/self-update.log`. It finds the code folder
+through `data-location.json`, so after moving or renaming the main folder run `npm run update`
+(`installer/update.js`) in the code folder, or the installer, once.
 
 User data (presets, sounds, previews, fonts, window state) lives in `Framelly/`, next to the code folder.
 The installer writes the main folder's location to `data-location.json` in the installed plugin, so if you move or
@@ -85,7 +92,7 @@ rename the main folder, run the installer again.
 Register the MCP server once:
 
 ```bash
-claude mcp add framelly -- node "$HOME/Documents/Framelly Plugin Main/Framelly Plugin/mcp/framelly-mcp.js"
+claude mcp add framelly -- node "$HOME/Documents/Appselly/Framelly/mcp/framelly-mcp.js"
 ```
 
 The panel must be open in Resolve: when it starts it writes its local address and a token to

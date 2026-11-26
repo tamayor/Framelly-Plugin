@@ -9,7 +9,16 @@ const { app } = require('electron');
 
 const { MANIFEST_XML, PACKAGE_JSON } = require('./config');
 
+// The version, plus what main.js's self-update copied at this open (src/main/self-update.js), told only once.
 function getAppVersion() {
+    const v = readVersion();
+    const r = global.framellySelfUpdate;
+    if (!r || !r.updated) return v;
+    global.framellySelfUpdate = { ...r, updated: false, shown: true };
+    return { ...v, selfUpdate: { changed: r.changed.length, removed: r.removed.length } };
+}
+
+function readVersion() {
     try {
         const pkgPath = PACKAGE_JSON;
         if (fs.existsSync(pkgPath)) {

@@ -43,19 +43,26 @@ const props = (from) => ({ beats: renderBeats(shots.beats), from, assetMeta, ass
 // the worker
 const worker = spawn(process.execPath, [path.join(BROLL, 'render.mjs'), '--serve'], { cwd: BROLL, stdio: ['pipe', 'pipe', 'inherit'] });
 const waiting = new Map();
-let ready;
-const isReady = new Promise((r) => { ready = r; });
+let ready, readied = false;
+const isReady = new Promise((r) => { ready = () => { readied = true; r(); }; });
 let buf = '';
 worker.stdout.on('data', (d) => {
     buf += d;
     let i;
     while ((i = buf.indexOf('\n')) >= 0) {
         const line = buf.slice(0, i); buf = buf.slice(i + 1);
-        const sp = line.indexOf(' '), tag = sp < 0 ? line : line.slice(0, sp), body = sp < 0 ? null : JSON.parse(line.slice(sp + 1));
+        // a line that is not tag + JSON (Remotion's browser download log) is skipped
+        let body = null;
+        const sp = line.indexOf(' '), tag = sp < 0 ? line : line.slice(0, sp);
+        if (sp >= 0) { try { body = JSON.parse(line.slice(sp + 1)); } catch { continue; } }
         if (tag === 'READY') ready();
-        else if (tag === 'RESULT' || tag === 'ERROR') { const w = waiting.get(body.id); if (w) { waiting.delete(body.id); (tag === 'RESULT' ? w.ok : w.no)(body); } else if (tag === 'ERROR') { console.error(body.error); process.exit(1); } }
+        else if (body && (tag === 'RESULT' || tag === 'ERROR')) { const w = waiting.get(body.id); if (w) { waiting.delete(body.id); (tag === 'RESULT' ? w.ok : w.no)(body); } else if (tag === 'ERROR') { console.error(body.error); process.exit(1); } }
     }
 });
+// the worker dying before READY or mid-job would leave the promises open and exit 0 with nothing written
+const died = (why) => { console.error('render worker ' + why); process.exit(1); };
+worker.on('error', (e) => died('failed: ' + e.message));
+worker.on('exit', (code, sig) => { if (code !== 0 || waiting.size || !readied) died('exited ' + (sig || code)); });
 let n = 0;
 const job = (j) => new Promise((ok, no) => { const id = 'c' + (++n); waiting.set(id, { ok, no }); worker.stdin.write(JSON.stringify({ id, width: W, height: H, fps: FPS, ...j }) + '\n'); });
 

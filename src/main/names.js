@@ -17,14 +17,30 @@ const OLD_APP_NAME = 'El Subtitle Animator';
 // The Media Pool bin for sounds and the category of the title and effect templates. Earlier: "Subtitle Animator".
 const CATEGORY = APP_NAME;
 const OLD_CATEGORY = 'Subtitle Animator';
-// The code folder beside the data folder (the data folder itself is named APP_NAME).
-const CODE_FOLDER_NAME = APP_NAME + ' Plugin';
-const OLD_CODE_FOLDER_NAME = OLD_APP_NAME + ' Plugin';
+// The main folder holds the code folder ("Framelly") and the data folder ("Framelly Source Assets"). Until 2026-11-26
+// they were "Framelly Plugin" and "Framelly", before that "El Subtitle Animator Plugin" and "El Subtitle Animator".
+// The code folder's new name is the data folder's old one, so an old-named data folder only counts when it is not a
+// code folder (isCodeFolder).
+const CODE_FOLDER_NAME = APP_NAME;
+const OLD_CODE_FOLDER_NAMES = [APP_NAME + ' Plugin', OLD_APP_NAME + ' Plugin'];
+const OLD_CODE_FOLDER_NAME = OLD_CODE_FOLDER_NAMES[0];
+const DATA_FOLDER_NAME = APP_NAME + ' Source Assets';
+const OLD_DATA_FOLDER_NAMES = [APP_NAME, OLD_APP_NAME];
 
 function exists(p) { try { return fs.existsSync(p); } catch (e) { return false; } }
 
 // `dir`, unless only the folder an earlier version made is there.
 function existingOr(dir, oldDir) { return !exists(dir) && exists(oldDir) ? oldDir : dir; }
+
+// A plugin code folder: it has main.js and src/main (installer/shared/env.js isCodeDir also checks the manifest).
+function isCodeFolder(dir) { return exists(path.join(dir, 'main.js')) && exists(path.join(dir, 'src', 'main')); }
+// The data folder inside `mainDir`: the current name, else one with an earlier name, else the current name (made later).
+function dataFolderIn(mainDir) {
+    const cur = path.join(mainDir, DATA_FOLDER_NAME);
+    if (exists(cur)) return cur;
+    for (const n of OLD_DATA_FOLDER_NAMES) { const d = path.join(mainDir, n); if (exists(d) && !isCodeFolder(d)) return d; }
+    return cur;
+}
 
 // "Framelly SFX" -> "El Subtitle Animator SFX": what an earlier version called the same folder or bin.
 function oldName(name) {
@@ -59,6 +75,7 @@ function glassRegistryFile(home = os.homedir(), platform = process.platform) {
 }
 
 module.exports = {
-    APP_NAME, OLD_APP_NAME, CATEGORY, OLD_CATEGORY, CODE_FOLDER_NAME, OLD_CODE_FOLDER_NAME, HOME_DIR,
+    APP_NAME, OLD_APP_NAME, CATEGORY, OLD_CATEGORY, CODE_FOLDER_NAME, OLD_CODE_FOLDER_NAME, OLD_CODE_FOLDER_NAMES,
+    DATA_FOLDER_NAME, OLD_DATA_FOLDER_NAMES, HOME_DIR, isCodeFolder, dataFolderIn,
     existingOr, oldName, sameName, outDirIn, isOwnName, adoptOldDir, glassRegistryFile,
 };

@@ -120,8 +120,10 @@ function findNextSubtitle(subs, curStart, curEnd) {
 
 // Puts the preview clip on the timeline ({start, end, text}).
 async function addLiveClip(sub, keepPlayhead) {
-    const p = state.livePrev, a = libEntry(p.animId), m = state.use;
-    if (!p || !a || !m) return;
+    const p = state.livePrev;
+    if (!p) return;
+    const a = libEntry(p.animId), m = state.use;
+    if (!a || !m) return;
     p.busy = true;
     p.start = sub.start; p.end = sub.end; p.subStart = sub.start;
     const txt = String(sub.text || ($('subText') && $('subText').value.trim()) || (a && a.sample) || 'Sample text').trim();
@@ -177,6 +179,7 @@ async function switchLivePreset(a) {
     const text = String(($('subText') && $('subText').value.trim()) || (s && s.text) || p.text || (a && a.sample) || 'Sample text').trim();
     p.sfxClip = await liveSfxFor(m, start, end);
     p.busy = false;
+    if (state.livePrev !== p || p.cancelled) return;   // ended or replaced while the sound was prepared
     await addLiveClip({ start, end, text }, true);
     refreshLiveBar();
 }
@@ -408,7 +411,8 @@ function bindLivePreview() {
                 try { al = await window.sa.liveAlive(); } catch (e) { al = null; } finally { p.checking = false; }
                 // a switch that started meanwhile replaced the clip: this answer is about the old one
                 if (state.livePrev !== p || p.busy || !p.hasClip || p.animId !== anim0) return;
-                if (al && al.alive === false && !al.none) { markRemoved(p); return; }
+                // none: main has no session any more (an Apply that found the clip gone ends it), so the bar must not stay on
+                if (al && al.alive === false) { markRemoved(p); return; }
             }
             if ((f < p.clipS || f >= p.clipE) && !(f >= p.start && f < p.end)) {
                 if (playWatch.playing) return;             // playing (looping) - the clip is only moved when the playhead is moved by hand
@@ -416,15 +420,18 @@ function bindLivePreview() {
                 const ns = L.subtitle;
                 if (ns && f >= ns.start && f < ns.end && ns.start !== p.subStart) {
                     // another caption: the same Text+ and sound are moved onto it (much quicker than removing and inserting again)
+                    // a refused move (busy, another timeline) puts the old caption back: the next edit push builds from these
+                    const prev = { start: p.start, end: p.end, subStart: p.subStart, text: p.text, sfxClip: p.sfxClip };
                     p.start = ns.start; p.end = ns.end; p.subStart = ns.start;
                     p.text = String(ns.text || ($('subText') && $('subText').value.trim()) || (a && a.sample) || 'Sample text').trim();
                     p.busy = true;
                     p.sfxClip = await liveSfxFor(m, ns.start, ns.end);
                     const mres = await window.sa.liveUpdate(liveReq(m, a, p.text));
                     p.busy = false;
-                    if (mres && mres.busy) { p.subStart = null; return; }
                     if (mres && mres.gone) { markRemoved(p); return; }
-                    if (mres && !mres.ok) { p.subStart = null; setStatus(mres.error || 'Could not move the preview', 'bad'); return; }
+                    if (!mres || mres.busy || !mres.ok) { Object.assign(p, prev); p.subStart = null; }
+                    if (!mres || mres.busy) return;
+                    if (!mres.ok) { setStatus(mres.error || 'Could not move the preview', 'bad'); return; }
                     if (mres && mres.frames) { p.clipS = mres.start; p.clipE = mres.start + mres.frames; }
                     p.key = JSON.stringify(liveReq(m, a, p.text));
                     setStatus('Preview moved to this subtitle' + (mres.warnings && mres.warnings.length ? ' · ' + mres.warnings.join(' ') : ''), 'ok');

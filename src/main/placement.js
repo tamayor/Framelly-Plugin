@@ -25,7 +25,7 @@ const { findItemsByIds, frameToTC, tcToFrame } = require('./resolve');
 const { ensureStopped } = require('./playback');
 const { placeRowSfx, rowSfxSet, segSfxAdd } = require('./row-sfx');
 const { snapAdd, snapAddTrack, snapCutKeys, snapTrack } = require('./timeline-snapshot');
-const { templateAgeMs } = require('./title-templates');
+const { isTitleClipName, templateAgeMs } = require('./title-templates');
 const PERF = require('./perf');
 
 // ------------------------------------------------------------------ building the clip
@@ -330,7 +330,7 @@ async function cutSnapshot(tl, snap) {
             for (let i = 0; i < arr.length; i += RESOLVE_BATCH) {
                 const facts = await Promise.all(arr.slice(i, i + RESOLVE_BATCH).map(it => Promise.all([named ? it.GetName() : '', it.GetStart(), it.GetEnd()]).catch(() => null)));
                 for (const f of facts) {
-                    if (!f || (named && /^Text\+/.test(String(f[0])))) continue;
+                    if (!f || (named && isTitleClipName(f[0]))) continue;
                     out.push(kind[0] + t + ':' + f[1] + '-' + f[2]);
                 }
             }

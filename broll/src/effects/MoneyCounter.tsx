@@ -29,8 +29,9 @@ export const MoneyCounter: React.FC<P> = (p) => {
                         textShadow: L.bare.shadow }}>{text}</div>
                 </div>
                 {p.label && (
-                    <div style={{ marginTop: 18, ...L.text.body(52, { color: L.bare.color, fontWeight: Math.max(600, L.v.font.bodyWeight) }),
-                        textShadow: L.bare.shadow, opacity: k }}>{p.label}</div>
+                    // the label sits on one line under the number (smaller than before, so it no longer wraps under a short number)
+                    <div style={{ marginTop: 14, ...L.text.body(40, { color: L.bare.color, fontWeight: Math.max(600, L.v.font.bodyWeight) }),
+                        whiteSpace: 'nowrap', textShadow: L.bare.shadow, opacity: k }}>{p.label}</div>
                 )}
             </div>
         </Place>

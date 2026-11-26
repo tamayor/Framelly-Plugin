@@ -11,9 +11,9 @@ const state = require('./state');
 const { RESOLVE_BATCH } = require('./config');
 const { memoCache } = require('./cache');
 const { bridgeCall } = require('./fusion-bridge');
-const { currentTimeline, getProject, tcToFrame, timelineMeta, videoTrackLists } = require('./resolve');
+const { currentTimeline, findItemsByIds, getProject, tcToFrame, timelineMeta, videoTrackLists } = require('./resolve');
 const PERF = require('./perf');
-const { deleteExtraSfx, findAudioItemById, findItemById, placeExtraSfx } = require('./placement');
+const { deleteExtraSfx, findItemById, placeExtraSfx } = require('./placement');
 const { refitRowSfx, segSfxFor, segSfxForget, segSfxRecord, segSfxSetEmpty } = require('./row-sfx');
 const { typingFramesFor } = require('./title-templates');
 
@@ -289,6 +289,7 @@ async function refitRowSounds(itemId) {
         // placing the sounds again clears the timeline's In/Out: a running preview's loop range goes back on its clip
         if (live) { try { await require('./live-preview').liveSetMarks(tl, text); } catch (e) { /* marks are a convenience */ } }
         if (!r) return null;
+        if (r.relink) await relinkText(tl, text);      // the copies moved on their own: out of sync with the text otherwise
         for (const sw of r.swaps) {
             if (live) {
                 live.extraIds = (live.extraIds || []).filter(id => !sw.from.includes(id)).concat(sw.to);
@@ -317,8 +318,9 @@ async function moveSegSounds(itemId, list) {
     const clipStart = Number(await text.GetStart());
     let moved = 0, failed = 0;
     const gone = [];
+    const found = await findItemsByIds(tl, want.map(x => String(x.id)), 'audio');      // one walk of the audio tracks
     for (const x of want) {
-        const it = await findAudioItemById(tl, x.id);
+        const it = found.get(String(x.id)) || null;
         if (!it) { gone.push(x.id); continue; }
         const target = clipStart + starts[x.seg] + (Number(x.off) || 0);
         if (Number(await it.GetStart()) === target) continue;
@@ -327,19 +329,21 @@ async function moveSegSounds(itemId, list) {
         if (ok) moved++; else failed++;
     }
     if (gone.length) segSfxForget(itemId, gone);
-    // A linked sound moved on its own is now out of sync with its text clip (Resolve's red "-00:10" badge on both).
-    // Linking the same group again takes the new positions as the sync point. An unlinked clip (live preview) stays so.
-    if (moved && typeof tl.SetClipsLinked === 'function' && typeof text.GetLinkedItems === 'function') {
-        try {
-            let have = (await text.GetLinkedItems()) || [];
-            if (!Array.isArray(have)) have = Object.values(have);
-            if (have.length) {
-                await tl.SetClipsLinked([text, ...have], false);
-                await tl.SetClipsLinked([text, ...have], true);
-            }
-        } catch (e) { /* the sounds are in place; only the badge stays */ }
-    }
+    if (moved) await relinkText(tl, text);
     return { moved, failed };
+}
+// A linked sound moved on its own is now out of sync with its text clip (Resolve's red "-00:10" badge on both).
+// Linking the same group again takes the new positions as the sync point. An unlinked clip (live preview) stays so.
+async function relinkText(tl, text) {
+    if (typeof tl.SetClipsLinked !== 'function' || typeof text.GetLinkedItems !== 'function') return;
+    try {
+        let have = (await text.GetLinkedItems()) || [];
+        if (!Array.isArray(have)) have = Object.values(have);
+        if (have.length) {
+            await tl.SetClipsLinked([text, ...have], false);
+            await tl.SetClipsLinked([text, ...have], true);
+        }
+    } catch (e) { /* the sounds are in place; only the badge stays */ }
 }
 
 // ------------------------------------------------------------------ Fit to words (src/main/word-fit.js)
@@ -619,9 +623,22 @@ async function setClipWordTimings(event, itemId, segs, wake) {
     if (!(r && r.ok)) return { error: (r && r.why) || 'Could not key the clip' };
     timingCache.delete(String(itemId));
     candMemo.list = null;
-    let sounds = null;
-    if (wake) {
-        try { sounds = await refitRowSounds(String(itemId)); } catch (e) { sounds = { error: e.message }; }
-    }
+    // the per-row sounds follow once the word lane has been left alone for a moment, not on every release
+    const sounds = wake ? refitRowSoundsSoon(String(itemId)) : null;
     return { ok: true, start: plan.start, end: plan.end, sounds };
+}
+// itemId -> timer of a refitRowSounds waiting for the word-lane edits to stop (setClipWordTimings)
+const refitTimers = new Map();
+const REFIT_QUIET_MS = 1200;
+function refitRowSoundsSoon(itemId, tries) {
+    clearTimeout(refitTimers.get(itemId));
+    const t = setTimeout(async () => {
+        refitTimers.delete(itemId);
+        // busy placing (or another refit running): tried again shortly, a few times
+        if (state.applying) { if ((tries || 0) < 10) refitRowSoundsSoon(itemId, (tries || 0) + 1); return; }
+        try { await refitRowSounds(itemId); } catch (e) { require('./log').dlog('ROW-SFX-REFIT-FAIL', String(e && e.message || e)); }
+    }, REFIT_QUIET_MS);
+    if (t.unref) t.unref();
+    refitTimers.set(itemId, t);
+    return { deferred: true };
 }

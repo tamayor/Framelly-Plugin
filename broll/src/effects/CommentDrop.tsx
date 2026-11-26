@@ -20,7 +20,7 @@ const Heart: React.FC<{ on: boolean; n: number; pop: number }> = ({ on, n, pop }
             <path d="M12 21s-8.5-5.3-10.6-10.2C-0.3 6.6 2.4 2 6.6 2c2.4 0 4.1 1.3 5.4 3.1C13.3 3.3 15 2 17.4 2c4.2 0 6.9 4.6 5.2 8.8C20.5 15.7 12 21 12 21z"
                 fill={on ? '#e0245e' : 'none'} stroke={on ? '#e0245e' : '#9a9a9a'} strokeWidth={2} />
         </svg>
-        {n > 0 && <div style={{ fontFamily: FONT.sans, fontSize: 15, color: '#777', marginTop: 2 }}>{n}</div>}
+        <div style={{ fontFamily: FONT.sans, fontSize: 15, color: '#777', marginTop: 2, height: 18, opacity: n > 0 ? 1 : 0 }}>{n > 0 ? n : ''}</div>
     </div>
 );
 
@@ -49,8 +49,12 @@ export const CommentDrop: React.FC<P> = (p) => {
     const drop = spring({ frame: frame - post, fps, config: classic ? { damping: 13, stiffness: 140 } : L.spring });
     const dropR = spring({ frame: frame - replyAt, fps, config: classic ? { damping: 13, stiffness: 140 } : L.spring });
     const likes = Math.max(0, Math.round(p.likes || 0));
-    const shown = Math.round(interpolate(frame, [post + 6, D - (p.exit ?? 0) - 4], [0, likes], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' }));
-    const pop = Math.max(0, 1 - ((frame - post - 6) % 8) / 8) * (shown > 0 && shown < likes ? 1 : 0);
+    // the hearts count up over ~0.9 s after the post (eased, so the number settles instead of ticking to the last
+    // frame) and the heart pops once as the first like lands: no repeating pulse
+    const likeEnd = Math.min(D - 2, post + 6 + Math.round(fps * 0.9));
+    const shown = Math.round(interpolate(frame, [post + 6, likeEnd], [0, likes], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp', easing: (x) => 1 - Math.pow(1 - x, 3) }));
+    const popS = frame >= post + 6 ? spring({ frame: frame - post - 6, fps, config: { damping: 10, stiffness: 180 } }) : 0;
+    const pop = Math.sin(Math.PI * Math.min(1, popS)) * (frame - post - 6 < fps ? 1 : 0);
 
     return (
         <Place p={p}>
@@ -65,8 +69,10 @@ export const CommentDrop: React.FC<P> = (p) => {
                         padding: '8px 18px', fontSize: 20, fontWeight: 600 }}>Post</div>
                 </Card>
                 {/* the creator's comment */}
-                {frame >= post && (
-                    <Card L={L} style={{ transform: `translateY(${(1 - drop) * -120}px)`, opacity: Math.min(1, drop * 1.5), alignItems: 'flex-start' }}>
+                {/* comment and reply are always laid out (hidden until their moment), so the centred block keeps its
+                    size and nothing above jumps when they land */}
+                {(
+                    <Card L={L} style={{ transform: `translateY(${(1 - drop) * -120}px)`, opacity: frame >= post ? Math.min(1, drop * 1.5) : 0, alignItems: 'flex-start' }}>
                         <Avatar letter={p.author} color="#d6c7a1" size={52} />
                         <div style={{ flex: 1 }}>
                             <div style={{ fontSize: 18, color: dim }}><b style={{ color: ink }}>{p.author}</b> · now</div>
@@ -76,8 +82,8 @@ export const CommentDrop: React.FC<P> = (p) => {
                     </Card>
                 )}
                 {/* the reply */}
-                {p.reply && frame >= replyAt && (
-                    <Card L={L} style={{ marginTop: 14, marginLeft: 48, transform: `translateY(${(1 - dropR) * -80}px)`, opacity: Math.min(1, dropR * 1.5) }}>
+                {p.reply && (
+                    <Card L={L} style={{ marginTop: 14, marginLeft: 48, transform: `translateY(${(1 - dropR) * -80}px)`, opacity: frame >= replyAt ? Math.min(1, dropR * 1.5) : 0 }}>
                         <Avatar letter={p.user} color={L.accent} size={40} />
                         <div style={{ flex: 1 }}>
                             <div style={{ fontSize: 16, color: dim }}><b style={{ color: ink }}>{p.user}</b> · now</div>

@@ -396,7 +396,7 @@ function ctvInit() {
     const tick = async () => {
         let wait = 500;
         try {
-            if (!ctv.range || document.hidden || $('tabCut').classList.contains('hidden') || $('ctResult').classList.contains('hidden') || $('ctvMain').clientWidth < 40) return;
+            if (!ctv.range || document.hidden || (typeof state !== 'undefined' && state.idle) || $('tabCut').classList.contains('hidden') || $('ctResult').classList.contains('hidden') || $('ctvMain').clientWidth < 40) return;
             if (Date.now() - ctv.gotoAt < 700) return;               // a click here just moved it
             let f = null;
             if (window.sa.cutToolsPlayhead) { try { const r = await window.sa.cutToolsPlayhead(); if (r && Number.isFinite(r.frame)) f = r.frame; } catch (e) { /* next tick */ } }

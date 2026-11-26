@@ -89,8 +89,8 @@ document.addEventListener('click', async (e) => {
     await new Promise(res => setTimeout(res, 150));    // let the window settle before the change is applied
     const reopen = colorReopen; colorReopen = null;
     if (reopen && reopen.isConnected) setTimeout(() => { colorPanelUntil = 0; reopen.click(); }, 0);
+    setStatus('', '');      // a busy answer too: 'Opening the colour picker…' must not stay up
     if (r && r.busy) return;
-    setStatus('', '');
     if (r && r.ok && r.hex) {
         if (r.hex !== t.value) {
             t.value = r.hex;

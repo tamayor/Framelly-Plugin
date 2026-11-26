@@ -55,6 +55,7 @@
   ],
   "auto-session.js": [
     "currentTimeline:function",
+    "otherHold:function",
     "placed:object",
     "subtitleAt:function",
     "swapAudioIds:function",
@@ -141,11 +142,13 @@
     "brollTrace:function",
     "brollVibeProps:function",
     "brollWordLane:function",
+    "claimTimeline:function",
     "currentTl:function",
     "draftScale:function",
     "findNode:function",
     "findWordHit:function",
     "placeFile:function",
+    "putBack:function",
     "renderJob:function"
   ],
   "cache.js": [
@@ -474,13 +477,18 @@
     "APP_NAME:string",
     "CATEGORY:string",
     "CODE_FOLDER_NAME:string",
+    "DATA_FOLDER_NAME:string",
     "HOME_DIR:string",
     "OLD_APP_NAME:string",
     "OLD_CATEGORY:string",
     "OLD_CODE_FOLDER_NAME:string",
+    "OLD_CODE_FOLDER_NAMES:object",
+    "OLD_DATA_FOLDER_NAMES:object",
     "adoptOldDir:function",
+    "dataFolderIn:function",
     "existingOr:function",
     "glassRegistryFile:function",
+    "isCodeFolder:function",
     "isOwnName:function",
     "oldName:function",
     "outDirIn:function",
@@ -605,6 +613,12 @@
   ],
   "selection.js": [
     "findSelectedFusionItem:function"
+  ],
+  "self-update.js": [
+    "isCodeDir:function",
+    "runtimeFiles:function",
+    "syncFromCode:function",
+    "wanted:function"
   ],
   "settle.js": [
     "settleLater:function",

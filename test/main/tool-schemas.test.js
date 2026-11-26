@@ -47,3 +47,16 @@ test('calls are checked: required and typed arguments; extras and text numbers a
     assert.match(T.checkToolArgs('status', []), /must be an object/);
     assert.equal(T.checkToolArgs('no_such_tool', { a: 1 }), null, 'unknown tools are answered by the router');
 });
+
+test('booleans and numbers sent as text reach the tool as real values', () => {
+    const chop = { path: 'a.srt', outPath: 'a.srt', overwrite: 'false', groups: [] };
+    assert.equal(T.checkToolArgs('chop_srt', chop), null);
+    assert.equal(chop.overwrite, false, '"false" must not act as true');
+    const cuts = { path: 'clip.mov', start: '10', duration: '5', threshold: ' 8 ' };
+    assert.equal(T.checkToolArgs('find_cuts', cuts), null);
+    assert.deepEqual([cuts.start, cuts.duration, cuts.threshold], [10, 5, 8]);
+    assert.equal(cuts.start + cuts.duration, 15);
+    const rm = { itemId: '123' };
+    assert.equal(T.checkToolArgs('remove_placed', rm), null);
+    assert.equal(rm.itemId, '123', 'string-typed ids stay text');
+});

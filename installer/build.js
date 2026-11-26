@@ -1,4 +1,5 @@
-// Builds the installer app and puts it in the main folder, beside the code and data folders.
+// Builds the installer app and puts it in Installers/ in the code folder, where people pick an installer.
+// The app finds "Framelly Plugin" by looking up from wherever it sits, so it works from there.
 //   npm run build                 for this computer
 //   npm run build -- win32 x64    for Windows: one "Install Framelly (Windows).exe"
 
@@ -7,7 +8,7 @@ const path = require('path');
 const { execFileSync } = require('child_process');
 
 const HERE = __dirname;
-const MAIN = path.resolve(HERE, '..', '..');
+const OUT = path.join(HERE, '..', 'Installers');
 const NAME = 'Install Framelly';
 const APP_ID = 'com.framelly.installer';
 
@@ -37,14 +38,16 @@ const APP_ID = 'com.framelly.installer';
                 portable: { artifactName: NAME + '.exe' },
             },
         });
-        const dest = path.join(MAIN, NAME + ' (Windows).exe');
+        fs.mkdirSync(OUT, { recursive: true });
+        const dest = path.join(OUT, NAME + ' (Windows).exe');
         fs.copyFileSync(exe, dest);
         console.log('Built ' + dest);
         return;
     }
     if (platform !== 'darwin') { console.log('Built ' + dir); return; }
     const built = path.join(dir, NAME + '.app');
-    const dest = path.join(MAIN, NAME + ' (Mac).app');
+    fs.mkdirSync(OUT, { recursive: true });
+    const dest = path.join(OUT, NAME + ' (Mac).app');
     fs.rmSync(dest, { recursive: true, force: true });
     execFileSync('/usr/bin/ditto', [built, dest]);          // keeps the app's signature and links
     console.log('Built ' + dest);

@@ -7,6 +7,7 @@
 import React from 'react';
 import { kitScene, KitDefs, KitItem } from './RisoKit';
 import { floodScene } from './RisoFlood';
+import { alkansyaScene } from './RisoAlkansya';
 
 const INK = '#1c2738', PAPER = '#efe4cc', MATCHA = '#3f7f45', STRAW = '#c7385a';
 const cl = (x: number) => Math.max(0, Math.min(1, x));
@@ -748,6 +749,8 @@ export const RisoIllo: React.FC<{ items: IlloItem[]; f: number }> = ({ items, f 
             if (kit !== undefined) return kit;
             const flood = floodScene(it as KitItem, f, i);   // Ep. 20 flood-wall scenes (RisoFlood.tsx)
             if (flood !== undefined) return flood;
+            const alk = alkansyaScene(it as KitItem, f, i);   // special: the alkansya (RisoAlkansya.tsx)
+            if (alk !== undefined) return alk;
             switch (it.kind) {
                 case 'queue': return <Queue key={i} it={it} f={f} />;
                 case 'folders': return <Folders key={i} it={it} f={f} id="illo" />;

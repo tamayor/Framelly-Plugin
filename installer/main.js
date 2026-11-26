@@ -1,6 +1,6 @@
 // Install Framelly: a small window with a checklist and an Install button.
-// The app sits in the main folder, beside "Framelly Plugin" (the code) and "Framelly" (the
-// data). While developing it runs from installer/ with `npm start`.
+// The app sits in Installers/ inside the code folder ("Framelly"); the data folder ("Framelly Source Assets") is the
+// code folder's sibling. While developing it runs from installer/ with `npm start`.
 
 const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
 const fs = require('fs');
@@ -105,11 +105,11 @@ if (gotLock) app.whenReady().then(() => {
     ipcMain.handle('chooseFolder', async () => {
         const r = await dialog.showOpenDialog(win, {
             title: 'Choose the Framelly main folder', properties: ['openDirectory'],
-            message: 'Choose the folder that holds "Framelly Plugin".',
+            message: 'Choose the Framelly code folder, or the folder that holds it.',
         });
         if (r.canceled || !r.filePaths[0]) return { ok: false };
         const found = E.findCodeDir([r.filePaths[0]]);
-        if (!found) return { ok: false, error: 'That folder does not hold "Framelly Plugin".' };
+        if (!found) return { ok: false, error: 'That folder does not hold the Framelly code folder.' };
         codeDir = found;
         try { fs.mkdirSync(path.dirname(PREFS()), { recursive: true }); fs.writeFileSync(PREFS(), JSON.stringify({ codeDir })); } catch (err) { /* asked again next time */ }
         return { ok: true };

@@ -74,4 +74,4 @@ function setTab(t) {
     redrawStages();
 }
 
-function baseName(p) { return String(p || '').split('/').pop(); }
+function baseName(p) { return String(p || '').split(/[\\/]/).pop(); }

@@ -57,6 +57,18 @@ test('rules are saved and read back from edit-rules.json, and a broken file give
     assert.deepEqual(R.loadRules(), R.defaultRules());
 });
 
+test('saving over a broken rules file keeps the broken file aside', () => {
+    const dir = path.dirname(R.RULES_FILE), aside = () => fs.readdirSync(dir).filter(n => n.startsWith('edit-rules.json.corrupt-'));
+    for (const n of aside()) fs.rmSync(path.join(dir, n));
+    fs.writeFileSync(R.RULES_FILE, '{ "notes": "mine", }');
+    R.saveRules(Object.assign(R.loadRules(), { color: '#123456' }));
+    assert.equal(aside().length, 1);
+    assert.equal(fs.readFileSync(path.join(dir, aside()[0]), 'utf8'), '{ "notes": "mine", }');
+    R.saveRules(R.loadRules());
+    assert.equal(aside().length, 1, 'a good file is not copied');
+    fs.rmSync(R.RULES_FILE);
+});
+
 test('highlight box and row requests are null when nothing would change', () => {
     assert.equal(R.highlightReq({ auto: false }), null);
     assert.equal(R.highlightReq({ auto: false, width: 1, height: 1, x: 0, y: 0 }), null);

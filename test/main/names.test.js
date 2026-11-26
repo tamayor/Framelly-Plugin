@@ -47,10 +47,12 @@ test('the installer uses the same names', () => {
     const E = require('../../installer/shared/env');
     const config = env.main('config');
     assert.equal(E.PLUGIN_ID, config.PLUGIN_ID);
-    assert.equal(E.DATA_FOLDER_NAME, N.APP_NAME);
-    assert.equal(E.OLD_DATA_FOLDER_NAME, N.OLD_APP_NAME);
+    assert.equal(E.DATA_FOLDER_NAME, N.DATA_FOLDER_NAME);
+    assert.deepEqual(E.OLD_DATA_FOLDER_NAMES, N.OLD_DATA_FOLDER_NAMES);
     assert.equal(E.CODE_FOLDER_NAME, N.CODE_FOLDER_NAME);
-    assert.equal(E.OLD_CODE_FOLDER_NAME, N.OLD_CODE_FOLDER_NAME);
+    assert.deepEqual(E.OLD_CODE_FOLDER_NAMES, N.OLD_CODE_FOLDER_NAMES);
+    assert.equal(E.CODE_FOLDER_NAME, 'Framelly');
+    assert.equal(E.DATA_FOLDER_NAME, 'Framelly Source Assets');
     assert.equal(path.basename(N.existingOr(path.join(tmp, E.HOME_FOLDER_NAME), path.join(tmp, E.OLD_HOME_FOLDER_NAME))), '.framelly');
     assert.ok(E.OLD_PLUGIN_IDS.includes('com.el.subtitleanimator') && !E.OLD_PLUGIN_IDS.includes(E.PLUGIN_ID));
 });
@@ -66,6 +68,33 @@ test('the installer finds a code folder and a data folder that still have the ea
     assert.equal(E.locations(code).dataDir, path.join(main, E.DATA_FOLDER_NAME));           // none yet: the current name
     fs.mkdirSync(path.join(main, E.OLD_DATA_FOLDER_NAME));
     assert.equal(E.locations(code).dataDir, path.join(main, E.OLD_DATA_FOLDER_NAME));
+});
+
+// 2026-11-26: "Framelly Plugin" + "Framelly" became "Framelly" (code) + "Framelly Source Assets" (data).
+test('a code folder named "Framelly" is never taken for the old data folder of that name', () => {
+    const E = require('../../installer/shared/env');
+    const main = path.join(tmp, 'main-2026');
+    const mk = (dir) => {
+        fs.mkdirSync(path.join(dir, 'src', 'main'), { recursive: true });
+        fs.writeFileSync(path.join(dir, 'manifest.xml'), '<Id>' + E.PLUGIN_ID + '</Id>');
+        fs.writeFileSync(path.join(dir, 'main.js'), '');
+    };
+    // the old layout, not renamed yet: "Framelly Plugin" is the code, "Framelly" the data
+    const oldCode = path.join(main, 'Framelly Plugin');
+    mk(oldCode);
+    fs.mkdirSync(path.join(main, 'Framelly', 'presets'), { recursive: true });
+    assert.equal(E.findCodeDir([main]), oldCode);
+    assert.equal(E.locations(oldCode).dataDir, path.join(main, 'Framelly'));
+    assert.equal(N.dataFolderIn(main), path.join(main, 'Framelly'));
+    // the new layout: "Framelly" is the code folder, the data is "Framelly Source Assets" (made later when missing)
+    fs.rmSync(main, { recursive: true, force: true });
+    const code = path.join(main, 'Framelly');
+    mk(code);
+    assert.equal(E.findCodeDir([path.join(code, 'Installers')]), code);
+    assert.equal(E.locations(code).dataDir, path.join(main, 'Framelly Source Assets'));
+    assert.equal(N.dataFolderIn(main), path.join(main, 'Framelly Source Assets'));
+    fs.mkdirSync(path.join(main, 'Framelly Source Assets'));
+    assert.equal(E.locations(code).dataDir, path.join(main, 'Framelly Source Assets'));
 });
 
 // Regression (PB-01): the panel looked for glass.json in the data folder, the bridge writes it elsewhere,

@@ -29,6 +29,10 @@ const MAX_SEL = 4;
 // bar re-keys what it changes), so the look comes every FOCUSED_MS instead of every EVERY_MS.
 const FOCUSED_MS = 2100;
 let lastTickAt = 0;
+// Nothing keyed selected for IDLE_AFTER_MS and the panel not focused: the look comes every IDLE_MS (a keyed clip
+// selected then is picked up at most IDLE_MS late) instead of every EVERY_MS.
+const IDLE_AFTER_MS = 5000, IDLE_MS = 2000;
+let lastKeyedAt = 0;
 function panelFocused() {
     try { return !!(state.mainWindow && !state.mainWindow.isDestroyed() && state.mainWindow.isFocused()); } catch (e) { return false; }
 }
@@ -49,7 +53,9 @@ async function tick() {
         return;
     }
     if (getFixes().inspectorTimingWatch === false) return;
-    if (Date.now() - lastTickAt < FOCUSED_MS - 50 && panelFocused()) return;
+    const sinceTick = Date.now() - lastTickAt;
+    if (sinceTick < FOCUSED_MS - 50 && panelFocused()) return;
+    if (sinceTick < IDLE_MS - 50 && Date.now() - lastKeyedAt > IDLE_AFTER_MS && !panelFocused()) return;
     lastTickAt = Date.now();
     busy = true;
     const sp = PERF.span('segwatch.tick');
@@ -59,9 +65,14 @@ async function tick() {
         const ls = state.lastSelection;
         if (ls && Date.now() - ls.at < EVERY_MS) sel = ls.items.slice(0, MAX_SEL);
         if (!sel) {
-            const { tl } = await currentTimeline(EVERY_MS);
+            // EVERY_MS * 2: every other tick reuses the cached timeline (at EVERY_MS it was always just stale)
+            const t0 = Date.now();
+            const now = await currentTimeline(EVERY_MS * 2);
+            const tl = now.tl;
             if (!tl) return;
             const all = (await tl.GetSelectedClips()) || [];
+            // the selection, plus project / timeline / name when the cached timeline was not reused
+            noteResolveLatency(Date.now() - t0, now.at >= t0 ? 4 : 1);
             sel = (Array.isArray(all) ? all : Object.values(all)).slice(0, MAX_SEL);
         }
         if (!sel.length) return;
@@ -70,6 +81,7 @@ async function tick() {
         noteResolveLatency(Date.now() - tn, 1);      // answered together: about one call's time
         const keyed = sel.filter((c, k) => KEYED_CLIP.test(names[k]));
         if (!keyed.length) return;
+        lastKeyedAt = Date.now();
         const ids = await Promise.all(keyed.map(c => Promise.resolve(c.GetUniqueId()).then(String).catch(() => '')));
         for (let k = 0; k < keyed.length; k++) {
             if (state.applying) return;

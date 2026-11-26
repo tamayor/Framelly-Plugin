@@ -7,7 +7,7 @@
 
 const tmState = {
     info: null, dragging: null, active: { lane: 0, part: 'e' }, sendTimer: null, sentAt: 0, glideTimer: null, busy: false,
-    builtFor: '', wordLane: null, wordLaneAsking: null, wordLaneCtl: null, wordDragging: false, wordSendTimer: null, wordSentAt: 0
+    builtFor: '', wordLane: null, wordLaneAsking: null, wordLaneCtl: null, wordDragging: false, wordSendTimer: null, wordSentAt: 0, wordSending: false, wordPending: false
 };
 const TM_SNAP_PX = 12;          // magnet radius
 const TM_HEAD_PX = 11;          // grab radius of a head
@@ -532,20 +532,39 @@ async function tmLoadWordLane(force) {
     if (tmState.wordLaneCtl) { tmState.wordLaneCtl.paint(); tmAlignWordLane(); }
     if (tmState.info && tmState.info.ranges) tmPaintRowWords();
 }
-async function tmSendWords(wake) {
+async function tmSendWords(wake, job) {
     const i = tmState.info, w = tmState.wordLane;
-    if (!i || !w || w.itemId !== i.itemId || !Array.isArray(w.segs) || !w.segs.length) return;
+    // a delayed send carries the clip and words it was made on: selecting another clip meanwhile must not drop it
+    if (!job) job = (i && w && w.itemId === i.itemId) ? { info: i, itemId: i.itemId, segs: w.segs } : null;
+    if (!job || !Array.isArray(job.segs) || !job.segs.length) return;
+    // one re-key at a time: a release while one is still running sends the latest words once it is done
+    if (tmState.wordSending) {
+        const q = tmState.wordPending || (tmState.wordPending = {});
+        q[job.itemId] = { wake: !!wake || !!(q[job.itemId] && q[job.itemId].wake), job };
+        return;
+    }
+    tmState.wordSending = true;
+    try { await tmSendWordsNow(job, wake); } finally { tmState.wordSending = false; }
+    const again = tmState.wordPending;
+    tmState.wordPending = false;
+    if (again) for (const k of Object.keys(again)) tmSendWords(again[k].wake, again[k].job);
+}
+async function tmSendWordsNow(job, wake) {
     tmState.wordSentAt = Date.now();
     tmState.sentAt = Date.now();
     try {
-        const res = await window.sa.setClipWordTimings(i.itemId, w.segs, !!wake);
+        const res = await window.sa.setClipWordTimings(job.itemId, job.segs, !!wake);
         if (res && res.error) setStatus(res.error, 'bad');
         else if (res && res.ok) {
+            // the bar's info may have been read again for the same clip meanwhile: the answer goes on that one
+            const i = (tmState.info && tmState.info.itemId === job.itemId) ? tmState.info : job.info;
             if (i.ranges && i.ranges[0]) {
                 if (i.ranges[0].hasStart && Number.isFinite(res.start)) i.ranges[0].start = res.start;
                 if (Number.isFinite(res.end)) i.ranges[0].end = res.end;
             }
             i.fitted = true;
+            // another clip is selected by now: its bar and lane are not this one's
+            if (!tmState.info || tmState.info.itemId !== job.itemId) return;
             tmState.unfitAt = 0;
             renderTiming();
             tmRenderWords();
@@ -571,8 +590,12 @@ function tmWordLaneEdit(idx, s, e, final) {
     tmRenderWords();
     clearTimeout(tmState.wordSendTimer);
     // While a word's in / out is dragged only the lane and bar move; the clip is re-keyed once, on release. Sending
-    // every step made Resolve re-render the whole comp about ten times a second.
-    if (final) tmSendWords(true);
+    // every step made Resolve re-render the whole comp about ten times a second. Quick releases one after another
+    // (nudging several words) are sent together, a moment after the last one.
+    if (final) {
+        const job = { info: i, itemId: i.itemId, segs: w.segs.slice() };
+        tmState.wordSendTimer = setTimeout(() => tmSendWords(true, job), 500);
+    }
 }
 function tmWordLaneReset() {
     tmFitWords();

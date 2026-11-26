@@ -106,7 +106,7 @@ async function startRun(o, word) {
     const py = await pillowPython();
     if (!py) throw new Error('Article Text Match Cut needs Python with Pillow. In Terminal run: pip3 install pillow');
 
-    const args = [SCRIPT, word, '--out-dir', outRoot, '--size', meta.width + 'x' + meta.height, '--fps', String(meta.fps),
+    const args = [SCRIPT, '--out-dir', outRoot, '--size', meta.width + 'x' + meta.height, '--fps', String(meta.fps),
         '--count', String(Math.max(2, Math.min(40, Number(o.count) || DEFAULTS.count))),
         '--start-frames', String(Number(o.startFrames) || DEFAULTS.startFrames),
         '--end-frames', String(Number(o.endFrames) || DEFAULTS.endFrames),
@@ -114,6 +114,7 @@ async function startRun(o, word) {
     if (o.highlight) args.push('--highlight', /^#[0-9a-f]{6}$/i.test(o.highlightColor || '') ? o.highlightColor : DEFAULTS.highlightColor);
     const sfx = typeof o.sfx === 'string' && fs.existsSync(o.sfx) ? o.sfx : (o.sfx ? DEFAULT_SFX : null);
     if (sfx && fs.existsSync(sfx)) args.push('--sfx', sfx);
+    args.push('--', word);      // last, after '--': a word such as "-40%" is not read as an option
 
     job = { word, running: true, cancelled: false, progress: { phase: 'start', text: 'Starting…' }, result: null, error: null };
     send({ ...job.progress, word });
@@ -154,7 +155,11 @@ async function startRun(o, word) {
             let placed = null;
             if (o.place !== false) {
                 send({ phase: 'place', text: 'Placing on ' + tlName, word });
-                try { placed = await placeOnTimeline(project, tlName, result, start, !!(sfx && fs.existsSync(sfx))); } catch (e) { placed = { error: String(e && e.message || e) }; }
+                // the timeline lock for the placement only (not the render), as B-roll and Collage take it
+                try {
+                    await claimTimeline(result.dir);
+                    try { placed = await placeOnTimeline(project, tlName, result, start, !!(sfx && fs.existsSync(sfx))); } finally { state.applying = false; }
+                } catch (e) { placed = { error: String(e && e.message || e) }; }
             }
             j.running = false;
             j.result = { ...result, placed };
@@ -167,6 +172,16 @@ async function startRun(o, word) {
         });
     });
     return j;
+}
+
+// Waits until no panel step holds state.applying and no MCP tool in another call chain holds the automation lock,
+// then sets the flag in the same tick. Longer than a panel click waits: the render is done and only its placement waits.
+async function claimTimeline(dir) {
+    const { otherHold } = require('./auto-session');
+    const until = Date.now() + 60000;
+    while ((state.applying || otherHold()) && Date.now() < until) await new Promise(r => setTimeout(r, 150));
+    if (state.applying || otherHold()) throw new Error('Resolve is busy placing something; the MP4 is in ' + dir);
+    state.applying = true;
 }
 
 // The MP4 goes into the "Framelly MatchCut" bin and onto the timeline at `start`.

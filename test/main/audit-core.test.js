@@ -287,16 +287,21 @@ test('MCP local tools: arguments are checked, blank groups and the source behind
 });
 
 test('MCP: ping is answered while a panel tool call is still running (PC-13)', { timeout: 10000 }, async () => {
-    let release;
+    let release, arrived;
+    const reached = new Promise(r => { arrived = r; });
     const server = http.createServer((req, res) => {
         release = () => { res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ ok: true, result: { done: true } })); };
+        arrived();
     });
     await new Promise(r => server.listen(0, '127.0.0.1', r));
     write(path.join(HOME, '.framelly', 'mcp-endpoint.json'), JSON.stringify({ port: server.address().port, token: 't' }));
     const mcp = startMcp();
     try {
         const slow = mcp.tool('status', {});
-        await new Promise(r => setTimeout(r, 150));
+        // waits for the call to reach the panel (a fixed sleep failed when the test files run in parallel)
+        let timer;
+        await Promise.race([reached, new Promise((_, j) => { timer = setTimeout(() => j(new Error('tool call never reached the panel')), 5000); })]);
+        clearTimeout(timer);
         const pong = await mcp.call('ping', {});
         assert.deepEqual(pong.result, {});
         assert.ok(release, 'the tool call reached the panel');

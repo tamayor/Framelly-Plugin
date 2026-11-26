@@ -7,21 +7,10 @@ const path = require('path');
 const E = require('./env');
 const P = require('./platform');
 
-const SKIP_NAMES = new Set(['.DS_Store', '__pycache__', '.git', '.gitignore', '.editorconfig', 'README.txt']);
-function wanted(name) { return !SKIP_NAMES.has(name) && !/\.(md|command|pyc)$/i.test(name); }
-
-// The runtime files: manifest.xml, package.json, main.js and src/. Relative path -> { size, mtime in seconds }.
-function runtimeFiles(codeDir) {
-    const files = new Map();
-    const walk = (rel) => {
-        const st = fs.statSync(path.join(codeDir, rel));
-        if (st.isDirectory()) {
-            for (const n of fs.readdirSync(path.join(codeDir, rel))) if (wanted(n)) walk(path.join(rel, n));
-        } else if (st.isFile()) files.set(rel, { size: st.size, mtime: Math.floor(st.mtimeMs / 1000) });
-    };
-    for (const top of ['manifest.xml', 'package.json', 'main.js', 'src']) if (E.exists(path.join(codeDir, top))) walk(top);
-    return files;
-}
+// The runtime file list (manifest.xml, package.json, main.js, src/ and the names skipped) is the panel's own, in
+// src/main/self-update.js, so the panel's self-update and this installer copy the same files. It is loaded from the
+// code folder because the packaged installer app does not carry src/.
+function runtimeFiles(codeDir) { return require(path.join(codeDir, 'src', 'main', 'self-update.js')).runtimeFiles(codeDir); }
 
 function detect(ctx) {
     const { dest, sampleNode } = ctx.paths;

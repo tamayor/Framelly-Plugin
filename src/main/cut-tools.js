@@ -13,6 +13,7 @@ const path = require('path');
 
 const { currentTimeline, getSubtitles, frameToTC, tcToFrame, timelineMeta, findItemsByIds } = require('./resolve');
 const { bridgeCall } = require('./fusion-bridge');
+const { isTitleClipName } = require('./title-templates');
 const MEDIA = require('./media-analysis');
 const { dlog } = require('./log');
 const state = require('./state');
@@ -70,6 +71,10 @@ async function timelineMedia(args) {
             for (const it of items) {
                 const [s, e] = await Promise.all([it.GetStart(), it.GetEnd()]);
                 if (!(e > range.from && s < range.to)) continue;
+                // Text+ / MultiText titles have no media pool item: asking for one makes Resolve log "Nil ScriptVal"
+                // (once per title, on every word-lane reload), so they are told apart by name first.
+                const nm = kind === 'video' ? String(await it.GetName()) : null;
+                if (nm !== null && isTitleClipName(nm)) continue;
                 let mpi = null;
                 try { mpi = await it.GetMediaPoolItem(); } catch (err) { /* a title or generator: not media */ }
                 if (!mpi) continue;
@@ -79,7 +84,7 @@ async function timelineMedia(args) {
                 if (!file || isOwnFile(file)) continue;
                 const type = String(ty || '').toLowerCase();
                 if (kind === 'video' && /still|image|png|jpg|timeline|compound/.test(type)) continue;
-                const [ss, se, name, id] = await Promise.all([it.GetSourceStartFrame(), it.GetSourceEndFrame(), it.GetName(), it.GetUniqueId()]);
+                const [ss, se, name, id] = await Promise.all([it.GetSourceStartFrame(), it.GetSourceEndFrame(), nm !== null ? nm : it.GetName(), it.GetUniqueId()]);
                 segments.push({
                     kind, track: t, itemId: id, name, file, audioOnly: type.startsWith('audio'),
                     tlStart: Number(s), tlEnd: Number(e), srcStartFrame: Number(ss) || 0, srcEndFrame: Number(se) || 0,

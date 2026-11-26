@@ -120,7 +120,11 @@ const WORD_UNITS = {
     'marker-highlight': p => String(p.phrase || '').split(/\s+/).filter(Boolean),
     'tag-stack': p => (p.tags || []).slice(0, 14).map(String).filter(Boolean),
     'pull-quote': p => String(p.quote || '').split(/\s+/).filter(Boolean),
-    'ransom-text': p => String(p.text || '').split(/\s+/).filter(Boolean)
+    'ransom-text': p => String(p.text || '').split(/\s+/).filter(Boolean),
+    // with rows: one unit per scoreboard row, matched by its label (the two cards alone land on one key word). Rows
+    // filtered as parseRows in VersusSplit.tsx; a row with no label matches on its first filled cell.
+    'versus-split': p => (Array.isArray(p.rows) ? p.rows : []).map(String).filter(r => r.trim()).slice(0, 5)
+        .map(r => { const c = r.split('|').map(s => s.trim()); return c[0] || c.find(Boolean) || ''; })
 };
 
 const ANY_ORDER = new Set(['tag-stack']);   // shown items that need not follow the speech order

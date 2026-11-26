@@ -553,12 +553,13 @@ async function cutBuild(event, opts) {
             try { r = await mp.AppendToTimeline(batch.map(p => info(p, fix))); } catch (e) { r = null; }
             if (!r || !r.length) {
                 // Resolve refuses the whole batch for one bad piece: place them one by one and skip the ones it refuses
+                let refusedHere = 0;      // this batch's only: earlier batches' refusals are not this one's
                 for (const p of batch) {
                     let one = null;
                     try { one = await mp.AppendToTimeline([info(p, fix)]); } catch (e) { one = null; }
-                    if (!one || !one.length) { skipped.push(p.s.name + ' ' + p.a + '–' + p.b); refused.add(p); }
+                    if (!one || !one.length) { skipped.push(p.s.name + ' ' + p.a + '–' + p.b); refused.add(p); refusedHere++; }
                 }
-                if (skipped.length >= batch.length) throw new Error('Resolve refused every piece from ' + (i + 1) + ' on (' + skipped[0] + ')');
+                if (refusedHere >= batch.length) throw new Error('Resolve refused every piece from ' + (i + 1) + ' on (' + skipped[skipped.length - refusedHere] + ')');
             }
         }
         if (skipped.length) dlog('CUT-BUILD skipped', skipped.join(', '));

@@ -8,6 +8,10 @@
 // A request's timeout starts when it is SENT, not when it was queued: a 90 s preview render no longer makes the
 // 4 s timing watch behind it fail. While queued, a request waits at most maxWaitMs (default twice its timeout, capped),
 // then fails with "helper busy". Identical read requests already waiting share one answer.
+// A request that times out is still running in Python (it reads one line at a time). Nothing more is sent until it
+// answers (the "drain"): otherwise the next requests would be written behind it, time out themselves, and still run
+// later, writes included, after their callers were told they failed. A helper that has not answered after DRAIN_MS
+// is killed and a fresh one takes the queue. A stuck render (capture) is killed at once.
 // perf.json renderProcess: a second helper takes the renders (capture / live_frame), so they never hold up the rest.
 
 module.exports = {
@@ -32,6 +36,7 @@ const LANE_OF = {
 const COALESCE = new Set(['fx_get', 'seg_watch', 'controls_get', 'timing_get', 'row_times', 'ping', 'fonts', 'tools']);
 const RENDER_OPS = new Set(['capture', 'live_frame', 'timeline_frames']);
 const MAX_WAIT_CAP_MS = 60000;
+const DRAIN_MS = 30000;
 
 function bridgeLane(op) { return LANE_OF[op] === undefined ? 1 : LANE_OF[op]; }
 
@@ -49,6 +54,15 @@ class Helper {
         this.queue = []; for (let i = 0; i < LANES; i++) this.queue.push([]);
         this.inflight = null;
         this.seq = 1;
+        this.draining = null;      // id of a request that timed out but is still running in the helper
+        this.drainSince = 0;
+        this.drainOp = '';
+        this.drainTimer = null;
+    }
+
+    endDrain() {
+        this.draining = null; this.drainSince = 0; this.drainOp = '';
+        if (this.drainTimer) { clearTimeout(this.drainTimer); this.drainTimer = null; }
     }
 
     alive() {
@@ -63,6 +77,7 @@ class Helper {
             PYTHONPATH: path.join(RESOLVE_SCRIPT_API, 'Modules') + path.delimiter + (process.env.PYTHONPATH || '')
         });
         this.buf = ''; this.err = '';
+        this.endDrain();      // a new process has nothing of the old one's still running
         const proc = spawn(pythonPath(), [BRIDGE_SCRIPT], { env });
         this.proc = proc;
         state[this.slot] = proc;
@@ -86,6 +101,7 @@ class Helper {
             if (this.proc !== proc) return;
             const reason = why + (this.err ? ' ' + this.err : '');
             const job = this.inflight; this.inflight = null;
+            this.endDrain();
             if (job) this.settle(job, null, new Error(reason));
             for (const q of this.queue) { for (const j of q.splice(0)) this.settle(j, null, new Error(reason)); }
             this.proc = null;
@@ -107,7 +123,7 @@ class Helper {
         job.waitTimer = setTimeout(() => {
             const q = this.queue[job.lane];
             const i = q.indexOf(job);
-            if (i >= 0) { q.splice(i, 1); this.settle(job, null, new Error('The Fusion helper is busy (' + (this.inflight ? this.inflight.op : '?') + ').')); }
+            if (i >= 0) { q.splice(i, 1); this.settle(job, null, new Error('The Fusion helper is busy (' + (this.inflight ? this.inflight.op : (this.drainOp || '?')) + ').')); }
         }, job.maxWaitMs);
         if (job.waitTimer.unref) job.waitTimer.unref();
         this.pump();
@@ -115,6 +131,13 @@ class Helper {
 
     pump() {
         if (this.inflight) return;
+        if (this.draining !== null) {
+            if (Date.now() - this.drainSince < DRAIN_MS) return;      // still waiting for the timed-out request's answer
+            const old = this.proc;      // it never answered: a fresh helper takes the queue
+            this.proc = null; state[this.slot] = null;
+            this.endDrain();
+            try { if (old) old.kill('SIGKILL'); } catch (e) { /* ignore */ }
+        }
         if (!this.alive()) {
             // the helper is gone (timed out and killed, or its pipe broke): a new one takes the jobs still queued
             if (!this.queue.some(q => q.length)) return;
@@ -137,8 +160,13 @@ class Helper {
                 const old = this.proc;
                 this.proc = null; state[this.slot] = null;
                 try { if (old) old.kill(); } catch (e) { /* ignore */ }
+                this.pump();
+                return;
             }
-            this.pump();
+            // still running in Python: nothing else is sent until it answers (onReply) or DRAIN_MS have passed
+            this.draining = job.id; this.drainSince = Date.now(); this.drainOp = job.op;
+            this.drainTimer = setTimeout(() => { this.drainTimer = null; this.pump(); }, DRAIN_MS + 10);
+            if (this.drainTimer.unref) this.drainTimer.unref();
         }, job.timeoutMs);
         try { this.proc.stdin.write(JSON.stringify({ id: job.id, op: job.op, args: job.args }) + '\n'); }
         catch (e) {
@@ -153,6 +181,11 @@ class Helper {
     }
 
     onReply(msg) {
+        if (this.draining !== null && msg.id === this.draining) {      // the timed-out request is done: the queue goes on
+            this.endDrain();
+            this.pump();
+            return;
+        }
         const job = this.inflight;
         if (!job || msg.id !== job.id) return;
         clearTimeout(job.timer);

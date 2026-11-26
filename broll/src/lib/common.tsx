@@ -78,8 +78,9 @@ export const Place: React.FC<{ p: Common; children: React.ReactNode; style?: Rea
     const hidden = useCurrentFrame() < Math.max(0, Math.round(Number(p.delay) || 0));   // before the In starts
     return (
         <AbsoluteFill style={{ pointerEvents: 'none' }}>
-            <div style={{ position: 'absolute', left: clamp(p.x ?? 0.5) * width, top: clamp(p.y ?? 0.5) * height,
-                transform: `translate(-50%, -50%) scale(${u})`, transformOrigin: 'center center', ...style, ...(hidden ? { opacity: 0 } : null) }}>
+            {/* textWrap balance (inherited): every wrapped line of every effect is balanced, no lone last word */}
+            <div style={{ position: 'absolute', left: clamp(p.x ?? 0.5) * width, top: clamp(p.y ?? 0.5) * height, textWrap: 'balance',
+                transform: `translate(-50%, -50%) scale(${u})`, transformOrigin: 'center center', ...style, ...(hidden ? { opacity: 0 } : null) } as React.CSSProperties}>
                 {children}
             </div>
         </AbsoluteFill>
@@ -138,7 +139,7 @@ export const wordCount = (text: string) => String(text || '').split(/\s+/).filte
 // Full-frame effects (banners, HUDs, backdrops, callouts in frame coordinates): the whole frame, hidden before the In.
 export const Full: React.FC<{ p: Common; children: React.ReactNode; style?: React.CSSProperties }> = ({ p, children, style }) => {
     const hidden = useCurrentFrame() < Math.max(0, Math.round(Number(p.delay) || 0));
-    return <AbsoluteFill style={{ pointerEvents: 'none', overflow: 'hidden', ...style, ...(hidden ? { opacity: 0 } : null) }}>{children}</AbsoluteFill>;
+    return <AbsoluteFill style={{ pointerEvents: 'none', overflow: 'hidden', textWrap: 'balance', ...style, ...(hidden ? { opacity: 0 } : null) } as React.CSSProperties}>{children}</AbsoluteFill>;
 };
 
 // A speech-like loudness envelope, 0..1 per frame: props._samples when the clip's audio was measured, else a seeded

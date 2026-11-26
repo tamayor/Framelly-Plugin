@@ -220,19 +220,29 @@ async function main() {
         const score = (c) => (ctxWords.length && ctxWords.every((w) => (c.title + ' ' + (c.description || '')).toLowerCase().includes(w)) ? 4 : 0) +
             (c.ctx ? 2 : 0) + (named && c.source === 'Wikimedia Commons' ? 1 : 0);
         const keep = [...seen.values()].sort((a, b) => score(b) - score(a) || b.hits - a.hits || a.rank - b.rank).slice(0, b.candidates || PER_BEAT);
-        const dir = path.join(proj, 'candidates', b.candidatesDir || b.id);
-        fs.rmSync(dir, { recursive: true, force: true });
-        fs.mkdirSync(dir, { recursive: true });
+        // fill a .part folder and swap it in only when something downloaded, so an offline run keeps the old candidates
+        const dir = path.join(proj, 'candidates', b.candidatesDir || b.id), part = dir + '.part';
+        fs.rmSync(part, { recursive: true, force: true });
+        fs.mkdirSync(part, { recursive: true });
         const got = [];
         for (const c of keep) {
-            const file = path.join(dir, `${String(got.length + 1).padStart(2, '0')}.jpg`);
+            const file = path.join(part, `${String(got.length + 1).padStart(2, '0')}.jpg`);
             try { await download(c.thumb, file); got.push({ n: got.length + 1, file: path.basename(file), ...c }); }
             catch (e) { dropped.push({ title: c.title, why: String(e.message) }); }
             await sleep(250);
         }
-        fs.writeFileSync(path.join(dir, 'candidates.json'), JSON.stringify({ beat: b.id, brief: b.brief, queries, context: ctx, candidates: got, dropped }, null, 1));
+        // nothing new and old candidates there: keep them (with no old folder the empty list is written as before)
+        if (!got.length && fs.existsSync(dir)) {
+            fs.rmSync(part, { recursive: true, force: true });
+            report.push({ beat: b.id, kept: 0, dropped: dropped.length, sheet: null, kept_old: true, why: dropped.slice(0, 5) });
+            console.log(JSON.stringify(report[report.length - 1]));
+            continue;
+        }
         let s = null;
-        try { s = sheet(dir, got.length); } catch (e) { dropped.push({ why: 'contact sheet: ' + e.message }); }
+        try { s = sheet(part, got.length) && path.join(dir, 'sheet.jpg'); } catch (e) { dropped.push({ why: 'contact sheet: ' + e.message }); }
+        fs.writeFileSync(path.join(part, 'candidates.json'), JSON.stringify({ beat: b.id, brief: b.brief, queries, context: ctx, candidates: got, dropped }, null, 1));
+        fs.rmSync(dir, { recursive: true, force: true });
+        fs.renameSync(part, dir);
         report.push({ beat: b.id, kept: got.length, dropped: dropped.length, sheet: s });
         console.log(JSON.stringify(report[report.length - 1]));
     }

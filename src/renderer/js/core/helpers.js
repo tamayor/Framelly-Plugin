@@ -9,8 +9,11 @@ function fpsNow() { return (state.live && state.live.fps) || 25; }
 function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 const sg = (n) => (n > 0 ? '+' : '') + n;
 
+// Windows paths too: backslashes become slashes and a drive letter (C:) gets the third slash and stays unencoded.
 function fileUrl(p) {
-    return 'file://' + p.split('/').map(encodeURIComponent).join('/');
+    let s = String(p).replace(/\\/g, '/');
+    if (/^[A-Za-z]:\//.test(s)) s = '/' + s;
+    return 'file://' + s.split('/').map((seg, i) => (i === 1 && /^[A-Za-z]:$/.test(seg)) ? seg : encodeURIComponent(seg)).join('/');
 }
 
 function play(p, volumeDb) {

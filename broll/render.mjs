@@ -202,7 +202,12 @@ async function main() {
             try { job = JSON.parse(line); } catch { return; }
             if (job.op === 'quit') { chain.then(async () => { try { await browser?.close({ silent: true }); } catch { /* gone */ } process.exit(0); }); return; }
             chain = chain.then(async () => {
-                try { say('RESULT', { id: job.id, ...(await run(job)) }); } catch (e) { say('ERROR', { id: job.id, error: String(e && e.message || e) }); }
+                try { say('RESULT', { id: job.id, ...(await run(job)) }); } catch (e) {
+                    say('ERROR', { id: job.id, error: String(e && e.message || e) });
+                    // Chrome may have crashed or hung: drop it so the next job's warm() opens a fresh one
+                    const dead = browser; browser = null;
+                    try { await dead?.close({ silent: true }); } catch { /* gone */ }
+                }
             });
         });
         rl.on('close', async () => { await chain; try { await browser?.close({ silent: true }); } catch { /* gone */ } process.exit(0); });

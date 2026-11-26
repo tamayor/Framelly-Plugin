@@ -22,11 +22,31 @@ const presets = fileCache('presets', { max: 200 });
 
 function defsFromFile(file, unhide) {
     if (!presets.entry(file)) return null;
-    return presets.value(file, unhide ? 'addons:unhidden' : 'addons', (s) => {
+    return presets.value(file, unhide ? 'addons:unhidden:v2' : 'addons:v2', (s) => {
         // the template marks every add-on hidden right after its "{" (hideAddons); the preset's own hidden ones say so later
         if (unhide) s = s.replace(/\{ IC_Visible = false,/g, '{');
-        return parseAddons(s);
+        return rowColourDefs(s).concat(parseAddons(s));
     });
+}
+
+// Justified Pop (tools/gen-justified-pop.py): its emphasis ("highlight") words take the Template's own Text+ colour 2
+// (Red2 / Green2 / Blue2), not an add-on, so parseAddons never sees it. It gets a colour control here; setting it
+// re-bakes the word Text+ (fusion_bridge op_controls_set -> rekey_comp -> bake_rows, which reads Red2 / Green2 / Blue2).
+// Detected like fusion_bridge kinetic_template: a Template with StepFrames + RowRatio, an E1 Text+, no Pop1.
+function rowColourDefs(s) {
+    const tm = /\n\s*Template\s*=\s*TextPlus\s*\{/.exec(s);
+    if (!tm || !/\bStepFrames\s*=/.test(s) || !/\bRowRatio\s*=/.test(s) || !/\n\s*E1\s*=\s*TextPlus\s*\{/.test(s)
+        || /\n\s*Pop1\s*=/.test(s)) return [];
+    const head = s.slice(tm.index, tm.index + 6000);
+    const val = (id, dflt) => {
+        const m = new RegExp('\\b' + id + '\\s*=\\s*Input\\s*\\{\\s*Value\\s*=\\s*(-?[\\d.]+(?:e-?\\d+)?)').exec(head);
+        return m ? Number(m[1]) : dflt;
+    };
+    return [{
+        id: 'Red2', kind: 'color', label: 'Highlight Color',
+        tip: 'Colour of the emphasis (highlighted) words',
+        ids: ['Red2', 'Green2', 'Blue2'], defs: [val('Red2', 0.941), val('Green2', 0.482), val('Blue2', 0.557)]
+    }];
 }
 
 // The clip's add-ons: from its title template (named like the clip), else from the library preset of that name.

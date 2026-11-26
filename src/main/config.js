@@ -6,7 +6,7 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 
-const { APP_NAME, OLD_APP_NAME, existingOr } = require('./names');
+const { dataFolderIn } = require('./names');
 
 const PLUGIN_ID = 'com.framelly.plugin';
 const INITIAL_PPID = process.ppid;
@@ -24,13 +24,12 @@ const WORKFLOW_INTEGRATION_NODE = path.join(APP_ROOT, 'WorkflowIntegration.node'
 
 // ------------------------------------------------------------------ library on disk
 // Both folders live side by side in one main folder, wherever the user keeps it:
-//   Framelly Plugin Main/
-//     Framelly Plugin/   the code (this repo, with the installer)
-//     Framelly/          the user data (presets, sounds, previews, fonts)
+//   Appselly/
+//     Framelly/                 the code (this repo, with the installer)
+//     Framelly Source Assets/   the user data (presets, sounds, previews, fonts)
 // The installed copy runs from Resolve's plugin folder, so the installer records the main folder in
-// data-location.json. Running straight from the repo, the data folder is the code folder's sibling (the one an
-// earlier version named "El Subtitle Animator" when that is the one there).
-const DATA_FOLDER_NAME = APP_NAME;
+// data-location.json. Running straight from the repo, the data folder is the code folder's sibling (one with an
+// earlier name, "Framelly" or "El Subtitle Animator", when that is the one there: names.js dataFolderIn).
 const LOCATION_FILE = path.join(APP_ROOT, 'data-location.json');
 
 function readLocation() {
@@ -38,7 +37,7 @@ function readLocation() {
         const loc = JSON.parse(fs.readFileSync(LOCATION_FILE, 'utf8'));
         if (loc && typeof loc.dataDir === 'string' && loc.dataDir) return loc;
     } catch { /* not installed by the installer: running from the repo */ }
-    return { dataDir: existingOr(path.join(APP_ROOT, '..', DATA_FOLDER_NAME), path.join(APP_ROOT, '..', OLD_APP_NAME)), codeDir: APP_ROOT };
+    return { dataDir: dataFolderIn(path.join(APP_ROOT, '..')), codeDir: APP_ROOT };
 }
 const LOCATION = readLocation();
 
