@@ -242,6 +242,7 @@
     "DEBUG_ON:boolean",
     "DRAFT_DIR:string",
     "FONTS_DIR:string",
+    "ICON_FILE:string",
     "INDEX_HTML:string",
     "INITIAL_PPID:number",
     "LIB_FILE:string",

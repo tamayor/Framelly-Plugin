@@ -16,6 +16,7 @@ const APP_ROOT = path.join(__dirname, '..', '..');
 const SRC_DIR = path.join(APP_ROOT, 'src');
 const PRELOAD_FILE = path.join(SRC_DIR, 'preload.js');
 const INDEX_HTML = path.join(SRC_DIR, 'renderer', 'index.html');
+const ICON_FILE = path.join(SRC_DIR, 'icon.png'); // window/taskbar icon (Windows); made from installer/icon/icon.svg
 const BRIDGE_SCRIPT = path.join(SRC_DIR, 'python', 'fusion_bridge.py');
 const PACKAGE_JSON = path.join(APP_ROOT, 'package.json');
 const MANIFEST_XML = path.join(APP_ROOT, 'manifest.xml');
@@ -145,7 +146,7 @@ const DEBUG_LOG = fs.existsSync(path.dirname(DEV_DEBUG_DIR))
 
 module.exports = {
     PLUGIN_ID, INITIAL_PPID,
-    APP_ROOT, PRELOAD_FILE, INDEX_HTML, BRIDGE_SCRIPT, PACKAGE_JSON, MANIFEST_XML, WORKFLOW_INTEGRATION_NODE,
+    APP_ROOT, PRELOAD_FILE, INDEX_HTML, ICON_FILE, BRIDGE_SCRIPT, PACKAGE_JSON, MANIFEST_XML, WORKFLOW_INTEGRATION_NODE,
     DATA_DIR, ANIM_DIR, ANIM_ORIG_DIR, SFX_DIR, SFX_ORIG_DIR, PREV_DIR, FONTS_DIR, LIB_FILE,
     APP_DATA_DIR, SFX_CACHE_DIR, DRAFT_DIR, CLIP_REG, WIN_STATE_FILE, ensureDirs,
     RESOLVE_PYTHON, RESOLVE_SCRIPT_LIB, RESOLVE_SCRIPT_API, OSASCRIPT, OSACOMPILE, RESOLVE_BATCH, resolveUserDir,

@@ -8,7 +8,7 @@ const fs = require('fs');
 const { BrowserWindow, screen } = require('electron');
 
 const state = require('./state');
-const { DEBUG_ON, INDEX_HTML, PRELOAD_FILE, WIN_STATE_FILE } = require('./config');
+const { DEBUG_ON, ICON_FILE, INDEX_HTML, PRELOAD_FILE, WIN_STATE_FILE } = require('./config');
 const { libForUI, loadLib, saveLib } = require('./library');
 const { quitPlugin } = require('./lifecycle');
 const { dlog } = require('./log');
@@ -292,6 +292,7 @@ function createWindow() {
         minWidth: MIN_W,
         minHeight: MIN_H,
         title: 'Framelly',
+        icon: ICON_FILE,
         backgroundColor: '#131614',
         // Set explicitly: the panel runs on whatever Electron Resolve ships, and the preload relies on isolation.
         webPreferences: { preload: PRELOAD_FILE, contextIsolation: true, nodeIntegration: false }
